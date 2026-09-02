@@ -161,8 +161,8 @@ Nine phases, 24 stages, each with a stated rationale and deliverable — see my 
 
 | Phase | Focus | Status |
 |---|---|---|
-| **0 — Foundation** | Repository, environment, data contracts | 🟡 In progress — Stage 1 (repo & environment) ✅ complete; Stage 2 (data contracts) next |
-| 1 — Data Understanding | Forensics, EDA | ⬜ Not started |
+| **0 — Foundation** | Repository, environment, data contracts | ✅ Complete — Stage 1 (repo & environment) and Stage 2 (data contracts) both done |
+| 1 — Data Understanding | Forensics, EDA | 🟡 Up next |
 | 2 — Validation Architecture | Multi-tier cross-validation | ⬜ Not started |
 | 3 — Feature Research | Temporal, spatial, climate enrichment | ⬜ Not started |
 | 4 — Baselines & Model Zoo | LightGBM · XGBoost · CatBoost | ⬜ Not started |
@@ -179,6 +179,18 @@ Nine phases, 24 stages, each with a stated rationale and deliverable — see my 
 - Wrote an environment smoke test (`tests/test_environment_smoke.py`) — 10/10 passing: every core library imports cleanly and completes a real fit/predict/log round-trip (LightGBM, XGBoost, CatBoost, scikit-learn, SHAP, MLflow, Pandera)
 - Standardized MLflow on a SQLite tracking backend after my smoke test caught MLflow 3.x deprecating the plain filesystem store — a real finding, not a hypothetical, and exactly what this stage is for
 - Configured pre-commit hooks (ruff, black, nbstripout) to run against my project's own pinned tools rather than pre-commit's network-dependent hosted hook environments
+
+</details>
+
+<details>
+<summary><strong>Stage 2 details (complete)</strong></summary>
+
+- Wrote pandera `DataFrameSchema` contracts for every raw file (`src/climate_health/data/schemas.py`): `TRAIN_SCHEMA`, `TEST_SCHEMA`, `CLIMATE_FEATURES_SCHEMA`, `SAMPLE_SUBMISSION_SCHEMA`
+- Contracts enforce column dtypes, value ranges (e.g. latitude/longitude bounded to Uganda's envelope), categorical membership, ID uniqueness and pattern (`ID_[8 hex chars]`), non-null constraints, and two cross-field consistency checks: `max_temperature >= avg_temperature >= min_temperature` and `rain_sum_90d >= rain_sum_30d >= rain_sum_7d`
+- Schemas validate lazily (`lazy=True`) so a bad file reports every violation in one pass, not just the first
+- Built schema-validated loaders (`src/climate_health/data/loaders.py`) — `load_train()`, `load_test()`, `load_climate_features()`, `load_sample_submission()`, `load_all()` — so nothing downstream ever calls `pd.read_csv` on a raw file directly
+- Wired a CI-ready CLI gate (`src/climate_health/data/validate.py`, run via `make validate`) that validates every raw file and exits non-zero on any contract violation
+- Verified all four real raw files validate cleanly against their contracts, and wrote 15 tests (`tests/test_schemas.py`) covering both the positive case and 11 deliberately corrupted negative cases (duplicate IDs, malformed ID patterns, broken temperature/rainfall ordering, invalid categories, out-of-range coordinates, null required fields, leaked target columns, missing files) — every corruption is confirmed caught, not just assumed to be
 
 </details>
 

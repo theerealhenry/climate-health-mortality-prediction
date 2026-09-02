@@ -12,7 +12,7 @@ format:
 	black src tests
 
 validate:
-	python -m climate_health.data.schemas
+	python -m climate_health.data.validate
 
 forensics:
 	jupyter lab notebooks/00_data_forensics.ipynb
