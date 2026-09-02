@@ -1,0 +1,11 @@
+# Conda bootstrap only: creates the interpreter + pip.
+# Everything else is installed from pyproject.toml via:
+#   conda env create -f environment.yml
+#   conda activate climate-health
+#   pip install -e ".[all]"
+name: climate-health
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip

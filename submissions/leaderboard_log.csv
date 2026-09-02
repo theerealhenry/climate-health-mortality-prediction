@@ -1,0 +1,2 @@
+submission_id,experiment_id,git_commit,model_version,feature_version,validation_version,tier1_score,tier2_mean,tier2_std,tier3_score,competition_score_local,public_lb_score,hypothesis,decision
+S-001,EXP-000,,,,,,,,,,,"Confirm submission.csv round-trips through the scripted pipeline and matches SampleSubmission.csv schema exactly",

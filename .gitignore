@@ -1,0 +1,33 @@
+# Environments
+.venv/
+__pycache__/
+*.pyc
+
+# MLflow / model artifacts (regenerated locally, not versioned)
+mlruns/
+mlartifacts/
+models/*
+!models/.gitkeep
+
+# Data working layers (raw is versioned; these are derived/large)
+data/interim/*
+data/processed/*
+data/external/*
+!data/interim/.gitkeep
+!data/processed/.gitkeep
+!data/external/.gitkeep
+
+# Notebook checkpoints
+.ipynb_checkpoints/
+
+# OS/editor cruft
+.DS_Store
+.vscode/
+*.egg-info/
+
+# Secrets
+.env
+
+# MLflow SQLite tracking store (project standard — see docs/PROJECT_BLUEPRINT.md)
+mlflow.db
+mlflow_artifacts/
