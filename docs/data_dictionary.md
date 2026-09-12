@@ -39,3 +39,40 @@ confirmed constant and should be dropped).
 | ndvi_30d / 90d | Median NDVI over N days | index (-1 to 1) | MODIS MOD13Q1 |
 | elevation | Ground elevation | m | SRTM |
 | slope | Terrain slope | degrees | Derived from SRTM |
+
+## Stage 3 data forensics — findings (see `notebooks/00_data_forensics.ipynb` for full detail)
+
+Full forensic audit run 2026-09-02 against the real raw files, cross-validated where
+relevant (not single-fit). **Overall verdict: clean** — no leak, no near-deterministic
+proxy, no circularity. One confirmed, actionable risk (twin records) is a validation-design
+concern, not a forensics failure.
+
+- **No leak / no proxy (the headline finding):** best single feature (`age`) reaches only
+  0.734 cross-validated AUC; best two-feature combination (`age` + `max_daily_rain_30d`)
+  reaches 0.764. Far below the ~0.95–0.99 range that would indicate a mechanically
+  derivable target.
+- **Twin-record risk, confirmed and quantified:** 66 groups (combined train+test) share
+  identical climate features via `(location, deathdate)` (72 via the finer
+  `(latitude, longitude, deathdate)`); 49/55 of those groups sit entirely within train.
+  Within-train twin label agreement (57–58%) mildly exceeds the independent-assignment
+  baseline (54.5%) — real spatial/temporal clustering in the target, not noise. **Stage 5's
+  validation design must guard against this as a separate constraint from geographic
+  generalization**, not assume grouped-CV alone covers it.
+- **`age` is non-monotonic:** 0.836 (0–5, 55.8% of train) → dips to 0.367 (13–18, n=49) →
+  rebounds to ~0.51–0.53 (19–45) → declines to 0.296 (60+). A recognizable
+  young-child/elderly vulnerability pattern, not an artifact. Action: test an `is_under_5`
+  flag and non-linear age treatment in Phase 3.
+- **Rolling-window climate aggregates outperform same-day readings:** raw
+  same-day temperature/precipitation columns are all near-chance (AUC 0.49–0.52); the
+  30/90-day rolling aggregates — especially `rain_sum_90d`, `tavg_90d`, `ndvi_30d`,
+  `ndvi_90d` — show meaningfully more target-rate spread. Prioritize these in Phase 3.
+  `hot_days_30d` confirmed constant — drop.
+- **`slope` has a genuinely different train/test distribution shape** (train std 1.167 vs.
+  test std 0.065 — not just a mean shift). Not a leak (all merges are ID-based, never
+  position-based), but flag it as a likely top driver in Stage 4's adversarial validation
+  and treat any model reliance on it with caution.
+- **`elevation`/`slope` sit on a coarse 23-value grid** across 50 locations — worth
+  accounting for when Phase 3 builds spatial clustering.
+- **Row-order/ID audit clean:** `ID` is a genuine opaque hash; Train/Test are
+  `deathdate`-sorted, `climate_features.csv` is not (explains a benign −0.178 row-position/
+  target correlation that cannot leak, since every merge in this project joins on `ID`).
