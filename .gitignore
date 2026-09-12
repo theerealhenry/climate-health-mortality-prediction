@@ -31,3 +31,6 @@ data/external/*
 # MLflow SQLite tracking store (project standard — see docs/PROJECT_BLUEPRINT.md)
 mlflow.db
 mlflow_artifacts/
+
+
+graphify-out/
