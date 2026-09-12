@@ -87,3 +87,46 @@ def load_all(raw_dir: Path = RAW_DATA_DIR) -> dict[str, pd.DataFrame]:
         "climate_features": load_climate_features(raw_dir),
         "sample_submission": load_sample_submission(raw_dir),
     }
+
+
+def merge_core_and_climate(core_df: pd.DataFrame, climate_df: pd.DataFrame) -> pd.DataFrame:
+    """Merges a core (Train/Test) frame with `climate_features.csv` on `ID`.
+
+    This is the one merge every Phase 3 feature module needs (spatial climate
+    normals, climate anomalies, interactions), so it lives here rather than being
+    re-implemented per module. `validate="one_to_one"` fails loudly if either input
+    ever stops being one-row-per-ID (e.g. a future data refresh introduces
+    duplicates), rather than silently fanning out rows. Both frames carry a
+    `deathdate` column; the climate frame's copy is suffixed `_cf` and kept only as
+    a redundancy check, not intended for use (see Stage 3 forensics: `climate_features.csv`
+    is not `deathdate`-sorted the way Train/Test are, but every merge here is ID-based,
+    never position-based, so that's never a leakage vector).
+    """
+    merged = core_df.merge(
+        climate_df, on="ID", suffixes=("", "_cf"), how="left", validate="one_to_one"
+    )
+    if merged["deathdate_cf"].isna().any():
+        n_missing = int(merged["deathdate_cf"].isna().sum())
+        raise DataContractError(
+            f"merge_core_and_climate: {n_missing} row(s) in core_df had no matching ID in "
+            "climate_df — every Train/Test ID is expected to have a climate_features.csv row."
+        )
+    mismatched = merged["deathdate"] != merged["deathdate_cf"]
+    if mismatched.any():
+        raise DataContractError(
+            f"merge_core_and_climate: {int(mismatched.sum())} row(s) have a `deathdate` that "
+            "disagrees with climate_features.csv's `deathdate` for the same ID — this would "
+            "indicate the two files have drifted out of sync for that record."
+        )
+    return merged.drop(columns=["deathdate_cf"])
+
+
+def load_train_full(raw_dir: Path = RAW_DATA_DIR) -> pd.DataFrame:
+    """Train.csv merged with climate_features.csv on `ID` — the standard model-ready
+    core+climate frame every Phase 3 feature module is built to consume."""
+    return merge_core_and_climate(load_train(raw_dir), load_climate_features(raw_dir))
+
+
+def load_test_full(raw_dir: Path = RAW_DATA_DIR) -> pd.DataFrame:
+    """Test.csv merged with climate_features.csv on `ID` — see `load_train_full`."""
+    return merge_core_and_climate(load_test(raw_dir), load_climate_features(raw_dir))
