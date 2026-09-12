@@ -132,6 +132,11 @@ def test_mlflow_roundtrip(tmp_path):
     # standardizes on SQLite here rather than opting back into the deprecated
     # file store. See docs/PROJECT_BLUEPRINT.md Stage 1 recorded decisions.
     mlflow.set_tracking_uri(f"sqlite:///{tmp_path}/mlflow_smoke_test.db")
+    # Fluent API caches the active experiment id globally per-process — earlier
+    # tests (test_tracking.py, test_baselines.py) set it against the real
+    # mlflow.db, and that stale id doesn't exist in this fresh tmp_path store.
+    # Pin the experiment explicitly so this test doesn't depend on suite order.
+    mlflow.set_experiment("smoke_test")
     with mlflow.start_run():
         mlflow.log_param("smoke_test", True)
         mlflow.log_metric("dummy_score", 0.5)
