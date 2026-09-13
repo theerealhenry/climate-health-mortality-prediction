@@ -37,18 +37,17 @@ ADR). Kept as-shipped so these baseline numbers stay reproducible.
 
 | Model | Tier 1 mean | Tier 1 std | Tier 2 mean | Tier 2 std | Tier 3 score |
 |---|---|---|---|---|---|
-| majority_baseline | — | — | — | — | — |
-| logistic_regression | — | — | — | — | — |
-| lightgbm_default | — | — | — | — | — |
-
-*(Fill in from your local MLflow run — see `mlflow ui --backend-store-uri sqlite:///mlflow.db`,
-experiment `climate-health`, runs named `majority_baseline` / `logistic_regression` /
-`lightgbm_default`.)*
+| majority_baseline | 0.6730 | 0.0003 | 0.6737 | 0.0078 | 0.6702 |
+| logistic_regression | 0.8068 | 0.0181 | 0.6881 | 0.1683 | 0.7891 |
+| lightgbm_default | 0.7975 | 0.0079 | 0.7892 | 0.0130 | 0.8040 |
 
 **Takeaway:** LightGBM beat the majority-class baseline on Tier 1 (confirmed
 by `tests/test_baselines.py::test_lightgbm_beats_majority_baseline_on_tier1`),
-establishing there is real, learnable signal in the feature set before any
-tuning work began.
+establishing real, learnable signal before any tuning work began. Note that
+`logistic_regression`'s Tier 2 std (0.1683, min 0.334) already showed the
+same geography-collapse pattern that later disqualified
+`logistic_regression_v2` in Stage 11.3 — this was visible from Stage 10.3
+onward, not a new Stage 11 finding.
 
 ---
 
