@@ -96,6 +96,29 @@ a future feature representation changes this result.
 
 ---
 
+## Stage 13.1 — Tuning scope and locked holdout decision
+
+Full rationale: `docs/decisions/ADR-001-stage13-tuning-scope-and-holdout.md`.
+
+**Candidate(s):** `catboost_native` only, tuned as `catboost_tuned`.
+LightGBM tuning is deferred until after Stage 14.1's prediction-correlation
+analysis shows it would add a meaningful, decorrelated gain — not tuned
+speculatively alongside CatBoost.
+
+**Trial budget:** 40 Optuna trials (after a 5-trial smoke test), chosen to
+fit a 2-day wall-clock limit for Stage 13 while respecting the blueprint's
+warning against overfitting the validation structure at ~39 geographic
+groups.
+
+**Locked internal holdout:** `tier2_splits(random_state=42, n_splits=5,
+n_repeats=5)`, fold `(repeat=0, fold=0)` — the first deterministically
+generated fold under the existing default seed, chosen before inspecting
+any per-fold score to avoid holdout selection itself becoming a form of
+data snooping. Excluded from every per-trial objective call; spent exactly
+once, near the end of tuning, per Stage 13.4.
+
+---
+
 ## Submission log
 
 *(Empty — filled in starting at the project's first Zindi submission, per the
