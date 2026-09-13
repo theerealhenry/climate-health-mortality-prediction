@@ -32,5 +32,9 @@ data/external/*
 mlflow.db
 mlflow_artifacts/
 
-
+#graphify folder
 graphify-out/
+
+# CatBoost training logs (regenerated every run, not versioned)
+catboost_info/
+**/catboost_info/
