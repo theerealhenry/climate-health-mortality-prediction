@@ -5,7 +5,7 @@ import copy
 import pytest
 
 from climate_health.data.loaders import load_test_full, load_train_full
-from climate_health.features.pipeline import build_feature_matrix
+from climate_health.features.pipeline import FeatureFitState, build_feature_matrix
 
 
 @pytest.fixture(scope="module")
@@ -60,6 +60,30 @@ def test_returned_state_transformers_are_isolated_copies(train_df):
     mutant = copy.deepcopy(state.spatial_cluster)
     mutant.fit(train_df)  # mutate the copy, not the original state's transformer
     assert state.spatial_cluster.kmeans_ is original_kmeans
+
+
+def test_target_encoding_mapping_is_also_an_isolated_copy(train_df):
+    """FeatureFitState deepcopies every mutable field, not just the two transformer
+    objects — target_encoding is a plain dict and just as mutable in a caller's
+    hands, so it needs the same protection. Construct a state directly (rather than
+    via build_feature_matrix) so there's an external dict reference to mutate that
+    is distinct from whatever the state stores internally."""
+    _, fitted = build_feature_matrix(train_df, fit=True)
+    external_mapping = {"rural": 0.5}
+    external_encoding = {"zone": (external_mapping, 0.5)}
+
+    state = FeatureFitState(
+        reference_year=fitted.reference_year,
+        heat_threshold=fitted.heat_threshold,
+        spatial_cluster=fitted.spatial_cluster,
+        climate_anomaly=fitted.climate_anomaly,
+        target_encoding=external_encoding,
+        branch_b_columns=fitted.branch_b_columns,
+    )
+
+    external_mapping["rural"] = -999.0  # mutate the caller's original reference
+
+    assert state.target_encoding["zone"][0]["rural"] == 0.5
 
 
 if __name__ == "__main__":
