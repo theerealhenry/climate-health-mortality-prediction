@@ -1,0 +1,45 @@
+# Stage 13.3 — best CatBoost config found by Optuna tuning (src/climate_health/models/tune.py).
+#
+# Objective: mean competition score (0.60*F1@0.5 + 0.40*AUC) over Tier 2's 24
+# non-locked geographic folds (25 total minus the ADR-001 locked holdout,
+# repeat=0/fold=0, which this config has NOT yet been evaluated against — that
+# is Stage 13.4, spent exactly once).
+#
+# Study: catboost_tuned_tier2 (sqlite:///optuna_studies.db), 45 total trials run
+# (5-trial smoke test + 40-trial full run, resumed into the same study).
+# Best trial: #26.
+
+model: catboost_native
+study_name: catboost_tuned_tier2
+best_trial: 26
+n_trials_total: 45
+
+params:
+  iterations: 306
+  depth: 6
+  learning_rate: 0.017544275318337493
+  l2_leaf_reg: 3.6615267575918784
+  bagging_temperature: 0.1333729133146769
+  random_state: 42
+
+# Full CV-tier scorecard for this exact config (Stage 12 table format).
+# Tier 1 and Tier 3 computed directly; Tier 2 is the non-locked-fold summary
+# from the tuning objective itself (see note above) — NOT a re-run including
+# the locked fold, which stays unspent until Stage 13.4.
+scorecard:
+  tier1_mean: 0.8135504515401575
+  tier1_scores: [0.7993643031784841, 0.8039986887941206, 0.8320473525141229, 0.8229933775744591, 0.8093485356396003]
+  tier2_mean: 0.8155589296546853
+  tier2_std: 0.019810975938293406
+  tier2_min: 0.7839724640632583
+  tier2_max: 0.8464661570843026
+  tier2_n_folds: 24  # of 25; locked holdout excluded, see ADR-001
+  tier3_score: 0.7962818292896399
+
+locked_holdout:
+  status: not_yet_spent
+  repeat: 0
+  fold: 0
+  note: >
+    Reserved for the one-time Stage 13.4 check per ADR-001. Do not evaluate
+    against this fold until that step.

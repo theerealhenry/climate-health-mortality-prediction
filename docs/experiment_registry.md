@@ -119,6 +119,183 @@ once, near the end of tuning, per Stage 13.4.
 
 ---
 
+## Stage 13.3 — CatBoost tuning result
+
+Source: `src/climate_health/models/tune.py::run_study`. Config: `configs/model_best.yaml`.
+Study `catboost_tuned_tier2` (`sqlite:///optuna_studies.db`), 45 total trials
+(5-trial smoke test + 40-trial full run, resumed into the same study, per
+ADR-001's 2-day budget). Best trial: **#26**.
+
+| Model | Tier 1 mean | Tier 2 mean (24 non-locked folds) | Tier 2 std | Tier 3 score | Competition score basis |
+|---|---|---|---|---|---|
+| catboost_native (Stage 11.3, default) | 0.8077 | 0.8023 | 0.0114 | 0.7953 | — |
+| **catboost_tuned (Stage 13.3, trial 26)** | **0.8136** | **0.8156** | 0.0198 | 0.7963 | Tier 2 mean, 24/25 folds |
+
+Params: `iterations=306, depth=6, learning_rate=0.01754, l2_leaf_reg=3.662,
+bagging_temperature=0.1334`.
+
+**Read the Tier 2 column carefully:** it is the mean over the 24 *non-locked*
+folds only (Optuna's actual objective) — not a re-run over all 25, and not
+directly comparable digit-for-digit to Stage 11.3's 25-fold `catboost_native`
+number above, though both are close enough (0.8023 vs 0.8156) to read as a
+real, modest improvement rather than noise. Tier 2 std rose slightly
+(0.0114 → 0.0198) alongside the mean — worth watching, not yet a red flag on
+its own at n=24.
+
+**Locked holdout status: SPENT (2026-09-13).** See Stage 13.4 below.
+
+---
+
+## Stage 13.4 — Locked-holdout check (spent, one-time)
+
+Full record: `docs/decisions/ADR-001-stage13-tuning-scope-and-holdout.md`,
+"Outcome" section.
+
+`catboost_tuned` (trial #26) evaluated once against `(repeat=0, fold=0)`
+under `random_state=42` — the fold excluded from every Stage 13.2/13.3
+trial:
+
+| Metric | Value |
+|---|---|
+| Locked-holdout competition score | **0.8344** |
+| Tier 2 mean (24 non-locked folds) | 0.8156 |
+| Gap (tuning mean − holdout) | −0.0188 |
+
+Gap is negative — the held-out fold scored *above* the tuning-time mean,
+the opposite signature of holdout-adjacent overfitting, and within the
+tuning distribution's own observed range (min 0.7840, max 0.8465).
+
+**Decision: promote `catboost_tuned` (trial #26) as the Phase 5 champion
+candidate.** Proceeds to Stage 14 ensembling as the primary model.
+`(random_state=42, repeat=0, fold=0)` is now spent for this candidate and
+will not be re-evaluated against it.
+
+---
+
+## Stage 14.1 — Prediction-correlation / diversity analysis (2026-09-13)
+
+Source: `notebooks/04_modeling_experiments.ipynb`, Stage 14.1 cells. OOF
+predictions for `catboost_tuned` (trial #26) plus the three remaining Stage
+11.3 diversity candidates, on one shared 5-fold partition (`random_state=99`
+— deliberately independent of ADR-001's locked holdout, never touches it).
+
+| Model | OOF competition score | Corr. w/ catboost_tuned | Both-wrong w/ catboost_tuned |
+|---|---|---|---|
+| catboost_tuned | 0.8096 | 1.0000 | 1.0000 |
+| extra_trees | 0.8030 | 0.9233 | 0.6473 |
+| histgradientboosting | 0.7906 | 0.8835 | 0.6118 |
+| logistic_regression_v2 | 0.7752 | 0.7690 | 0.6156 |
+
+**Standalone score and ensembling value disagree.** `extra_trees` ranks 2nd
+by score but is the *worst* ensembling partner for `catboost_tuned` — highest
+correlation (0.9233) and highest both-wrong rate (0.6473); it's a tree
+ensemble making largely the same calls. `logistic_regression_v2` ranks last
+by score but is the clearest genuine diversity find — lowest correlation
+with every tree model (0.65–0.77 vs. 0.88–0.93 tree-vs-tree) and a low
+both-wrong rate against the champion (0.6156). `histgradientboosting` is a
+solid secondary partner (0.6118 both-wrong, the best of the three) and forms
+the single most decorrelated pair in the matrix when combined with
+`logistic_regression_v2` (0.4787 both-wrong).
+
+**LightGBM tuning decision (resolves the open question from ADR-001 §13.1):**
+**deferred, not tuned.** Every tree-model pair here clusters tightly at
+r=0.88–0.93; LightGBM is another boosted-tree model in the same family, and
+`histgradientboosting` already occupies that role at zero extra tuning cost.
+No evidence here justifies the ~2x compute spend. Revisit only if Stage
+14.2's actual ensembling underperforms and specifically diagnoses
+insufficient tree-model diversity as the cause.
+
+**Carry-forward to Stage 14.2:** prioritize `catboost_tuned` +
+`logistic_regression_v2` and/or `catboost_tuned` + `histgradientboosting`
+blends. Include `extra_trees` in the full comparison for completeness, but
+expect its OOF-optimized weight to land near zero — a valid, worth-recording
+result on its own, not a failure of the analysis.
+
+---
+
+## Stage 14.2 — Ensembling strategies (2026-09-13)
+
+Source: `src/climate_health/models/ensemble.py`, run via
+`scripts/run_stage14_2_ensembling.py` over Stage 14.1's OOF predictions (same
+5-fold partition, `random_state=99`).
+
+| Strategy / model | OOF competition score |
+|---|---|
+| **weighted_average** | **0.8106** |
+| oof_stack | 0.8098 |
+| catboost_tuned (single model) | 0.8096 |
+| extra_trees (single model) | 0.8030 |
+| histgradientboosting (single model) | 0.7906 |
+| logistic_regression_v2 (single model) | 0.7752 |
+| rank_average | 0.7729 |
+
+Optimized weights: `catboost_tuned=0.6701, logistic_regression_v2=0.1658,
+extra_trees=0.1398, histgradientboosting=0.0243`.
+
+**Best strategy (`weighted_average`) beats the single best model
+(`catboost_tuned`) by only +0.0010** — inside the noise of a single 5-fold
+OOF partition (Stage 13.3's Tier 2 std across folds was ~0.02, twenty times
+this gap). Not yet trustworthy as a real improvement.
+
+**`rank_average` underperformed every single candidate** (0.7729, below even
+`logistic_regression_v2`'s 0.7752 alone) — equal-weighting three correlated
+tree models let their shared wrong calls outvote `catboost_tuned`'s correct
+ones. A useful negative result: unweighted rank averaging needs real
+diversity across *all* inputs, not just one strong pair, to help.
+
+**Surprise vs. Stage 14.1's forecast:** `extra_trees` received a non-trivial
+optimized weight (0.1398), not the near-zero weight predicted from its high
+correlation/both-wrong overlap with `catboost_tuned`. Noted, not yet
+trusted — one partition isn't enough to overturn that forecast.
+
+**Decision: do not promote a blend as champion yet.** The gain is too small
+to distinguish from between-fold noise on a single partition. Before
+promoting `weighted_average` (or any blend) over standalone `catboost_tuned`,
+re-run the weighted-average blend through repeated Tier 2 CV (mirroring
+Stage 13.3's 5×5 non-locked folds) to see if the gain holds up on average
+across folds — a stretch goal for Stage 14.3, not yet completed. Per
+ADR-001's consequence, promoting a blend would also require its own
+freshly-locked holdout evaluation (the existing locked holdout is spent for
+the standalone `catboost_tuned` config only).
+
+---
+
+## Stage 14.3 — Repeated-CV validation of the blend (stretch, 2026-09-14)
+
+Source: `scripts/run_stage14_3_repeated_cv_validation.py`. Re-scored the
+Stage 14.2 weighted-average blend (fixed weights: `catboost_tuned=0.6701,
+logistic_regression_v2=0.1658, extra_trees=0.1398,
+histgradientboosting=0.0243`) against the same 24 non-locked Tier 2 folds
+`catboost_tuned` was tuned on in Stage 13.3, pairing each fold's blend score
+against a freshly-computed `catboost_tuned` score on that same fold (Stage
+13.3 only ever recorded the 24-fold aggregate, not per-fold scores).
+
+| Model | 24-fold mean | 24-fold std |
+|---|---|---|
+| catboost_tuned (re-scored here) | 0.8156 | 0.0194 |
+| weighted_average blend | 0.8145 | 0.0163 |
+
+**Paired diff (blend − catboost), per fold: mean = −0.0011, std = 0.0068.**
+Blend won 12 of 24 folds — a coin flip, not a consistent edge.
+
+**This confirms Stage 14.2's +0.0010 gain was noise, not signal.** On a
+single 5-fold OOF partition the blend edged out `catboost_tuned`; on the
+full 24-fold repeated CV, the sign flips and the mean difference lands
+essentially at zero. The blend tracks `catboost_tuned` closely fold-to-fold
+(small diff std, expected given its 67% weight), but with no reliable
+direction to that tracking.
+
+**Decision: promote `catboost_tuned` (standalone, Optuna trial #26) as the
+Phase 5 champion.** No ensembling strategy from Stage 14 is used in the
+final model. This is a clean, evidence-based negative result — closes Stage
+14 and clears the way for Stage 15 (calibration + submission scripting)
+without carrying an unvalidated blend forward. Per ADR-001, the locked
+`(repeat=0, fold=0)` holdout was not touched in this stretch step and
+remains spent only for the standalone `catboost_tuned` config, exactly as
+already recorded.
+
+---
+
 ## Submission log
 
 *(Empty — filled in starting at the project's first Zindi submission, per the
