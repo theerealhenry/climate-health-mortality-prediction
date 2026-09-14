@@ -23,4 +23,4 @@ repos:
         entry: nbstripout
         language: system
         files: \.ipynb$
-        exclude: ^(notebooks/(00_data_forensics|01_eda|04_modeling_experiments|05_interpretability)\.ipynb|reference/.*\.ipynb)$
+        exclude: ^(notebooks/(00_data_forensics|01_eda|04_modeling_experiments|05_interpretability|04_modeling_experiments_2)\.ipynb|reference/.*\.ipynb)$
