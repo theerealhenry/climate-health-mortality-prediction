@@ -25,6 +25,7 @@ import pandas as pd
 from climate_health.features.climate import (
     ClimateAnomalyFeaturizer,
     add_heat_exceedance_features,
+    add_ndvi_trend_feature,
     add_rainfall_rate_features,
     compute_heat_threshold,
     drop_dead_columns,
@@ -83,6 +84,18 @@ try:
     }
 except ImportError:
     pass
+
+# Stage 8.5 Task 2/3: add_ndvi_trend_feature existed since Stage 8 (Track D) and was
+# tested in isolation, but was never actually called from build_feature_matrix — a
+# wiring gap, not a design decision. Once wired in and CV-checked
+# (scripts/run_stage8_5_ndvi_trend_cv.py), it *worsened* Tier-2 mean (0.8163 ->
+# 0.8150) despite small Tier-1/Tier-3 gains — see docs/experiment_registry.md's
+# F-005 entry. Rejected for default inclusion, but kept reachable as an opt-in
+# extra feature (same convention as Stage 9's interactions above) rather than
+# deleted, since it may combine differently with features tried later in Stage 8.5.
+# Added outside the try/except above so it doesn't depend on interactions.py's
+# availability.
+_INTERACTION_FNS["ndvi_trend"] = lambda df: add_ndvi_trend_feature(df)
 
 
 @dataclass(frozen=True)

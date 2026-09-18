@@ -296,6 +296,44 @@ already recorded.
 
 ---
 
+## Stage 8.5, Task 3 — ndvi_trend_30_90 (F-005, 2026-09-18)
+
+Source: `scripts/run_stage8_5_ndvi_trend_cv.py`. Feature pipeline: Stage 10.2
+(`build_feature_matrix`), Branch A (native categoricals). Model: `catboost_tuned`
+(Stage 13.3 config, `configs/model_best.yaml`), unchanged.
+
+**Hypothesis:** `add_ndvi_trend_feature()` (`ndvi_trend_30_90 = ndvi_30d -
+ndvi_90d`) — Stage 8 Track D's deliverable, tested in isolation since Stage 8 but
+never actually called from `build_feature_matrix` (a wiring gap found during
+Stage 8.5's post-champion feature-engineering review, not a design decision) —
+improves the champion's score once wired in.
+
+| Feature set | Tier 1 mean | Tier 2 mean | Tier 2 std | Tier 3 score |
+|---|---|---|---|---|
+| without ndvi_trend_30_90 | 0.8136 | 0.8163 | 0.0198 | 0.7963 |
+| with ndvi_trend_30_90 | 0.8140 | 0.8150 | 0.0157 | 0.7993 |
+
+**Decision: REJECT for default inclusion.** Tier-2 mean — this project's primary
+generalization signal given the confirmed 0% train/test coordinate overlap —
+*worsens* by 0.0013 with the feature included, despite a small Tier-1 gain
+(+0.0004), a small Tier-3 gain (+0.0030), and a genuine reduction in Tier-2
+variance (std -0.0040). Per the standing decision rule (keep only if Tier-2 mean
+improves AND std doesn't blow up — same standard as Stage 13.4's locked-holdout
+check), a Tier-2 mean regression fails the first condition regardless of the
+variance improvement or the Tier-1/Tier-3 movement; ranking on Tier 1 or Tier 3
+alone here would reproduce exactly the false-signal risk Phase 2's validation
+architecture exists to catch.
+
+**Not deleted, kept as opt-in.** `add_ndvi_trend_feature` remains available via
+`build_feature_matrix(..., extra_features=frozenset({"ndvi_trend"}))`, following
+the same default-off, explicit-opt-in convention Stage 9's interaction features
+already use — the function is correct and may combine differently with other
+features tried later in Stage 8.5 (the cluster-level NDVI aggregate, Task 4-7),
+so it stays reachable without being part of the default matrix every future
+experiment inherits silently.
+
+---
+
 ## Submission log
 
 *(Empty — filled in starting at the project's first Zindi submission, per the

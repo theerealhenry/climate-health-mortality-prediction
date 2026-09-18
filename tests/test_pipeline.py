@@ -54,6 +54,32 @@ def test_extra_features_opt_in_adds_columns(train_df):
     assert set(X_extra.columns) - set(X_plain.columns)
 
 
+def test_ndvi_trend_feature_is_opt_in_not_default(train_df, test_df):
+    """Stage 8.5 — `add_ndvi_trend_feature` (climate.py, Track D) existed, was
+    tested in isolation, and had a FEATURE_PROVENANCE entry since Stage 8, but was
+    never actually called from build_feature_matrix (a wiring gap, confirmed by
+    reading pipeline.py directly). Wiring it in as a DEFAULT feature and CV-checking
+    it (scripts/run_stage8_5_ndvi_trend_cv.py) found it worsens Tier-2 mean despite
+    small Tier-1/Tier-3 gains (docs/experiment_registry.md F-005) — so it's wired in
+    as an opt-in extra feature instead, same convention as Stage 9's interactions,
+    not silently included in every future experiment's default matrix."""
+    X_default, _ = build_feature_matrix(train_df, fit=True)
+    assert "ndvi_trend_30_90" not in X_default.columns
+
+    X_opt_in, state = build_feature_matrix(
+        train_df, fit=True, extra_features=frozenset({"ndvi_trend"})
+    )
+    assert "ndvi_trend_30_90" in X_opt_in.columns
+    assert (X_opt_in["ndvi_trend_30_90"] == X_opt_in["ndvi_30d"] - X_opt_in["ndvi_90d"]).all()
+
+    # No fitted state involved (pure arithmetic of two already-present columns), so
+    # fit=False on test data must produce the same column when opted in.
+    X_test_opt_in, _ = build_feature_matrix(
+        test_df, fit=False, fitted_state=state, extra_features=frozenset({"ndvi_trend"})
+    )
+    assert "ndvi_trend_30_90" in X_test_opt_in.columns
+
+
 def test_returned_state_transformers_are_isolated_copies(train_df):
     _, state = build_feature_matrix(train_df, fit=True)
     original_kmeans = state.spatial_cluster.kmeans_

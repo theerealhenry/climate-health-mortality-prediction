@@ -651,7 +651,11 @@ FEATURE_PROVENANCE: tuple[ProvenanceEntry, ...] = (
         "T-30d & T-90d (satellite composite, may lag)",
         "Needs verification",
         "Medium",
-        "Inherits both underlying columns' composite-lag caveat.",
+        "Inherits both underlying columns' composite-lag caveat. Stage 8.5 (2026-09-18, "
+        "F-005): wired into build_feature_matrix and CV-checked against catboost_tuned — "
+        "worsened Tier-2 mean (0.8163 -> 0.8150) despite small Tier-1/Tier-3 gains and "
+        "lower Tier-2 variance. Rejected for default inclusion; kept reachable as an "
+        "opt-in extra feature (extra_features={'ndvi_trend'}), not deleted.",
     ),
 )
 
