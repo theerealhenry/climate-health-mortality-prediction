@@ -1,0 +1,12 @@
+# Normalize line endings to LF in the repo regardless of OS checkout settings,
+# so Windows/PowerShell edits don't turn every touched file into a full-file
+# diff of line-ending changes with no real content difference.
+* text=auto eol=lf
+
+# Binary/data files: never touch line endings.
+*.csv binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.db binary
+*.ipynb text eol=lf
