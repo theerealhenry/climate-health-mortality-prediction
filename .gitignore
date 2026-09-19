@@ -28,7 +28,7 @@ data/external/*
 # Secrets
 .env
 
-# MLflow SQLite tracking store (project standard — see docs/PROJECT_BLUEPRINT.md)
+# MLflow SQLite tracking store (project standard â€” see docs/PROJECT_BLUEPRINT.md)
 mlflow.db
 mlflow_artifacts/
 
@@ -38,3 +38,6 @@ graphify-out/
 # CatBoost training logs (regenerated every run, not versioned)
 catboost_info/
 **/catboost_info/
+
+# Stage 15.3: predict.py's default output - the audited copy lives in submissions/
+submission.csv

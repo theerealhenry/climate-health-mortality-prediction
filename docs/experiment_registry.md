@@ -332,9 +332,115 @@ features tried later in Stage 8.5 (the cluster-level NDVI aggregate, Task 4-7),
 so it stays reachable without being part of the default matrix every future
 experiment inherits silently.
 
+## Stage 8.5, Task 7 — ndvi_30d/90d_cluster_smoothed (F-006, 2026-09-19)
+
+Source: `scripts/run_stage8_5_ndvi_cluster_cv.py`. Feature pipeline: Stage 10.2
+(`build_feature_matrix`), Branch A (native categoricals). Model: `catboost_tuned`
+(Stage 13.3 config, `configs/model_best.yaml`), unchanged.
+
+**Hypothesis:** `NDVIClusterFeaturizer` (Stage 8.5 Task 5, `climate.py`) —
+a shrinkage-smoothed blend of each row's spatial-cluster NDVI mean and the global
+training mean (`k=5`, same constant as `ClimateAnomalyFeaturizer`'s
+`min_group_month_size`), built specifically to give the audit's smallest clusters
+(cluster 4, n=3; cluster 7, n=2) a stable NDVI signal instead of a noisy raw mean —
+improves the champion's score once wired in as `ndvi_30d_cluster_smoothed` /
+`ndvi_90d_cluster_smoothed`.
+
+| Feature set | Tier 1 mean | Tier 2 mean | Tier 2 std | Tier 3 score |
+|---|---|---|---|---|
+| without ndvi_cluster_smoothed | 0.8136 | 0.8163 | 0.0198 | 0.7963 |
+| with ndvi_cluster_smoothed | 0.8142 | 0.8136 | 0.0159 | 0.7968 |
+
+**Decision: REJECT for default inclusion.** Same failure shape as F-005: Tier-2
+mean — this project's primary generalization signal — *worsens* by 0.0027 with the
+feature included, despite a small Tier-1 gain (+0.0006), a small Tier-3 gain
+(+0.0005), and a genuine reduction in Tier-2 variance (std -0.0039). Per the
+standing decision rule (keep only if Tier-2 mean improves AND std doesn't blow up),
+the Tier-2 regression fails the first condition regardless of the variance
+improvement or the Tier-1/Tier-3 movement. Two independent NDVI-derived features
+(F-005's trend, F-006's cluster-smoothed mean) have now both reduced Tier-2
+variance while worsening Tier-2 mean under the *identical* 5×5 repeated geographic
+GroupKFold — a repeated pattern, not a fluke of one CV split, and worth flagging
+for Stage 8.5's own retrospective: NDVI here appears to trade away exactly the
+generalization signal this project's CV architecture is designed to protect, in
+exchange for looking better on the coarser, less geography-aware tiers.
+
+**Not deleted, kept as opt-in.** `NDVIClusterFeaturizer` remains reachable via
+`build_feature_matrix(..., extra_features=frozenset({"ndvi_cluster_smoothed"}))`,
+same convention as F-005 and Stage 9's interaction features — the transformer is
+correct and the smoothing mechanism itself (not this specific NDVI application) may
+still be useful if reused for a different, non-NDVI value column later.
+
+## Stage 8.5, Task 8 — elevation_x_periurban (F-007, 2026-09-19)
+
+Source: `scripts/adhoc_stage8_5_elevation_zone_check.py` (throwaway, per the
+amended scope doc's "cheap check only" status for this task — not a
+FeatureFitState-aware transformer, no tests). Same model/pipeline as F-005/F-006.
+
+**Hypothesis:** `elevation * (zone == "Peri_urban")` captures something
+`spatial_cluster` doesn't, despite elevation and `spatial_cluster` being fit
+jointly in Stage 7 (the amended scope doc's stated reason for deprioritizing this
+check to XS/no-skill status).
+
+| Feature set | Tier 1 mean | Tier 2 mean | Tier 2 std | Tier 3 score |
+|---|---|---|---|---|
+| without elevation_x_zone | 0.8136 | 0.8163 | 0.0198 | 0.7963 |
+| with elevation_x_zone | 0.8138 | 0.8146 | 0.0163 | 0.7912 |
+
+**Decision: REJECT, not worth building as a real feature — confirms the
+suspicion.** Tier-2 mean worsens by 0.0017, and unlike F-005/F-006 this one also
+loses on Tier 3 (-0.0051), not just Tier-2 mean — no tier actually favors it once
+Tier 2 is weighted properly. Consistent with elevation carrying little signal
+`spatial_cluster` doesn't already encode. Script left in `scripts/` for the
+record but not promoted to `src/` and not wired into `build_feature_matrix` —
+per the task's own scope, a negative result here closes the task, it doesn't
+get retried with variations.
+
+**Stage 8.5 retrospective note:** three feature experiments this stage (F-005,
+F-006, F-007) have now all rejected on Tier-2 mean despite mixed-to-positive
+Tier-1/Tier-3 signal. This is a legitimate "searched, found nothing to promote"
+outcome for this feature-engineering push, not a process failure — but it does
+mean the champion model/feature set from before Stage 8.5 remains the best
+candidate for submission, and further NDVI/elevation variations are unlikely to
+be a productive use of the remaining competition time.
+
 ---
 
 ## Submission log
+
+Per the blueprint's S/F/M/E/C submission-numbering discipline (Stage 16). Only
+`C`-series rows are expected to compete for leaderboard position; every row here
+is matched 1:1 to an entry in `submissions/leaderboard_log.csv`.
+
+| Submission ID | Date | Model / config | Tier 1 mean | Tier 2 mean | Tier 2 std | Tier 3 score | Public LB score | Commit |
+|---|---|---|---|---|---|---|---|---|
+| C-001 | 2026-09-14 | catboost_tuned (Stage 13.3, trial 26) + Platt calibration (Stage 15.2) | 0.8136 | 0.8156 | 0.0198 | 0.7963 | **0.830979519** | `19bdb9a` |
+
+**C-001 is the only submission made to date, and the first Tier-2-validated
+submission per the blueprint's Stage 16 go/no-go checkpoint.**
+
+Commit note: `submissions/submission_745a64f.csv`'s filename references
+`745a64f` (Stage 15.2, the Platt-vs-isotonic comparison), but the actual
+retrain + `predict.py` run that generated the uploaded file is Stage 15.3,
+commit `19bdb9a` — dated 12 minutes *earlier* than 745a64f (05:27 vs 05:39,
+2026-09-14). The generation commit is logged here as the source of truth for
+"what was submitted," since that's the commit whose code, not whose filename
+convention, actually produced the row values. No `competition-submission-final`
+git tag exists yet for this commit — the blueprint's Stage 15.3 deliverable
+calls for one at "whichever point is actually the last submitted candidate,"
+which C-001 currently is; tagging it is an open action item, not yet done.
+
+**Go/no-go checkpoint (Stage 16, first Tier-2-validated `C`-series submission):**
+public LB (0.830979519) sits *above* local Tier-2 mean (0.8156) by +0.0154 —
+the opposite direction from the failure mode the checkpoint exists to catch
+(a large gap where public LB is *worse* than local CV would mean the
+geographic-generalization estimate was too optimistic). A positive gap in this
+direction is not itself a red flag, but it is a single data point from one
+partial-test-set score during the competition, not the private leaderboard —
+per the blueprint's own framing (0.1), scientific evidence and robust CV still
+outrank the public leaderboard number, and this one submission does not yet
+license raising the local CV estimate to match it.
+
 
 *(Empty — filled in starting at the project's first Zindi submission, per the
 blueprint's S/F/M/E/C submission discipline. Each entry: date, model/config,
