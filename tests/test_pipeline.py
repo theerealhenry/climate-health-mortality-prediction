@@ -80,6 +80,35 @@ def test_ndvi_trend_feature_is_opt_in_not_default(train_df, test_df):
     assert "ndvi_trend_30_90" in X_test_opt_in.columns
 
 
+def test_ndvi_cluster_smoothed_is_opt_in_and_reuses_fitted_state(train_df, test_df):
+    """Stage 8.5 Task 6 — NDVIClusterFeaturizer (climate.py) is stateful (a per-
+    cluster mean learned on train), unlike ndvi_trend's pure arithmetic, so it can't
+    live in _INTERACTION_FNS: it gets its own FeatureFitState.ndvi_cluster field.
+    This test locks in (a) default-off, (b) the opt-in adds both smoothed columns,
+    and (c) fit=False on test data reuses the exact fitted state rather than
+    refitting on test."""
+    X_default, state_default = build_feature_matrix(train_df, fit=True)
+    assert "ndvi_30d_cluster_smoothed" not in X_default.columns
+    assert state_default.ndvi_cluster is None
+
+    X_opt_in, state = build_feature_matrix(
+        train_df, fit=True, extra_features=frozenset({"ndvi_cluster_smoothed"})
+    )
+    assert "ndvi_30d_cluster_smoothed" in X_opt_in.columns
+    assert "ndvi_90d_cluster_smoothed" in X_opt_in.columns
+    assert state.ndvi_cluster is not None
+
+    X_test_opt_in, test_state = build_feature_matrix(
+        test_df,
+        fit=False,
+        fitted_state=state,
+        extra_features=frozenset({"ndvi_cluster_smoothed"}),
+    )
+    assert "ndvi_30d_cluster_smoothed" in X_test_opt_in.columns
+    # fit=False must reuse the fitted transformer verbatim, never refit on test.
+    assert test_state.ndvi_cluster is state.ndvi_cluster
+
+
 def test_returned_state_transformers_are_isolated_copies(train_df):
     _, state = build_feature_matrix(train_df, fit=True)
     original_kmeans = state.spatial_cluster.kmeans_

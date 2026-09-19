@@ -515,6 +515,160 @@ def add_ndvi_trend_feature(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+class NDVIClusterFeaturizer(BaseEstimator, TransformerMixin):
+    """Stage 8.5 Task 5 — adds `{col}_cluster_smoothed` = a shrinkage-weighted blend
+    of that row's `group_col` (spatial cluster) mean and the global training mean,
+    for each of `value_cols` (default the two NDVI windows).
+
+    Same shrinkage idea as `fit_target_encoding_map`'s smoothing, applied here to a
+    plain numeric mean instead of a target rate:
+
+        shrunk = (n_cluster * cluster_mean + k * global_mean) / (n_cluster + k)
+
+    where `n_cluster` is the training row count for that cluster and `k` is
+    `prior_strength` — small clusters (Stage 8.5's audit found clusters with as few
+    as 2-3 training rows) get pulled hard toward the global mean, large clusters are
+    barely moved. `prior_strength` defaults to `DEFAULT_MIN_GROUP_MONTH_SIZE` (5),
+    reusing the same "how many rows before we trust a bucket" constant
+    `ClimateAnomalyFeaturizer` already established for this project rather than
+    inventing a second threshold with no shared meaning.
+
+    Unlike `ClimateAnomalyFeaturizer`, there is no month tier here — Stage 8.5's
+    scope is a single cluster-level aggregate, not a seasonal one (the seasonal case
+    is already covered by `ClimateAnomalyFeaturizer` itself).
+
+    **`fit_transform(X)` is deliberately NOT equivalent to `fit(X).transform(X)`**,
+    for the same leave-one-out reason documented on `ClimateAnomalyFeaturizer`: a
+    row's own value must not contribute to its own cluster mean, or the smoothed
+    feature would leak a (small, but real) piece of each row's own value back to
+    itself. `transform()` on genuinely new data (test/production) is unaffected.
+
+    A cluster seen at `transform` time but never seen at `fit` time falls back to
+    the plain global training mean (`n_cluster=0`, so the shrinkage formula
+    collapses to the global mean anyway) rather than raising — the same fallback
+    posture as `ClimateAnomalyFeaturizer`'s "global" tier.
+
+    Parameters
+    ----------
+    value_cols : Sequence[str]
+        Columns to compute the smoothed cluster mean for (e.g. `("ndvi_30d",
+        "ndvi_90d")`).
+    group_col : str
+        The spatial grouping column — `SpatialClusterFeaturizer`'s output, fit and
+        applied to `df` before this transformer (mirrors `ClimateAnomalyFeaturizer`:
+        this class does not fit a clusterer itself).
+    prior_strength : float
+        The `k` in the shrinkage formula above — larger values pull harder toward
+        the global mean regardless of cluster size.
+
+    Raises
+    ------
+    KeyError
+        If a required column is missing at `fit` or `transform`.
+    ValueError
+        If required columns contain nulls, or if `transform`'s `X` already has an
+        output column this transformer would add.
+    sklearn.exceptions.NotFittedError
+        If `transform` is called before `fit`.
+    """
+
+    def __init__(
+        self,
+        value_cols: Sequence[str] = ("ndvi_30d", "ndvi_90d"),
+        group_col: str = "spatial_cluster",
+        prior_strength: float = DEFAULT_MIN_GROUP_MONTH_SIZE,
+        output_suffix: str = "_cluster_smoothed",
+    ):
+        if isinstance(value_cols, (str, bytes)):
+            raise TypeError(
+                "NDVIClusterFeaturizer: value_cols must be a sequence of column "
+                f"names (e.g. a list), not a bare string — got {value_cols!r} "
+                '(wrap it: value_cols=["' + str(value_cols) + '"])'
+            )
+        self.value_cols = value_cols
+        self.group_col = group_col
+        self.prior_strength = prior_strength
+        self.output_suffix = output_suffix
+
+    def _required_cols(self) -> list[str]:
+        return list(self.value_cols) + [self.group_col]
+
+    def fit(self, X: pd.DataFrame, y=None) -> NDVIClusterFeaturizer:
+        _validate_columns(X, self._required_cols(), "NDVIClusterFeaturizer.fit")
+        _validate_no_nulls(X, self._required_cols(), "NDVIClusterFeaturizer.fit")
+
+        value_cols = list(self.value_cols)
+        group = X[self.group_col]
+
+        self.n_train_ = len(X)
+        self.global_mean_: dict[str, float] = {c: float(X[c].mean()) for c in value_cols}
+        self._group_count_: dict = group.value_counts().to_dict()
+
+        group_sums = X.groupby(group)[value_cols].sum()
+        self._group_sum_: dict[str, dict] = {c: group_sums[c].to_dict() for c in value_cols}
+
+        k = self.prior_strength
+        self.group_smoothed_: dict[str, dict] = {}
+        for c in value_cols:
+            gmean = self.global_mean_[c]
+            self.group_smoothed_[c] = {
+                g: (self._group_sum_[c][g] + k * gmean) / (self._group_count_[g] + k)
+                for g in self._group_count_
+            }
+        return self
+
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        check_is_fitted(self, ["global_mean_", "group_smoothed_"])
+        _validate_columns(X, self._required_cols(), "NDVIClusterFeaturizer.transform")
+        _validate_no_nulls(X, self._required_cols(), "NDVIClusterFeaturizer.transform")
+
+        value_cols = list(self.value_cols)
+        new_cols = [f"{c}{self.output_suffix}" for c in value_cols]
+        _check_no_output_collision(X, new_cols, "NDVIClusterFeaturizer.transform")
+
+        group = X[self.group_col]
+        out = X.copy()
+        for c in value_cols:
+            lookup = self.group_smoothed_[c]
+            global_val = self.global_mean_[c]
+            out[f"{c}{self.output_suffix}"] = group.map(lookup).fillna(global_val).astype(float)
+        return out
+
+    def _transform_loo(self, X: pd.DataFrame) -> pd.DataFrame:
+        """Leave-one-out variant of `transform`, used only by `fit_transform` — see
+        the class docstring. Assumes `X` is (row-for-row) the same data just passed
+        to `fit`."""
+        value_cols = list(self.value_cols)
+        new_cols = [f"{c}{self.output_suffix}" for c in value_cols]
+        _check_no_output_collision(X, new_cols, "NDVIClusterFeaturizer.fit_transform")
+
+        group = X[self.group_col]
+        k = self.prior_strength
+        out = X.copy()
+        for c in value_cols:
+            g_sum = self._group_sum_[c]
+            g_count = self._group_count_
+            gmean = self.global_mean_[c]
+            values = out[c].to_numpy()
+
+            smoothed = np.empty(len(X), dtype=float)
+            for i, (g, x_i) in enumerate(zip(group.to_numpy(), values, strict=True)):
+                loo_sum = g_sum[g] - x_i
+                loo_count = g_count[g] - 1
+                smoothed[i] = (loo_sum + k * gmean) / (loo_count + k)
+            out[f"{c}{self.output_suffix}"] = smoothed
+        return out
+
+    def fit_transform(self, X: pd.DataFrame, y=None, **fit_params) -> pd.DataFrame:
+        if fit_params:
+            raise TypeError(
+                f"NDVIClusterFeaturizer.fit_transform: received unexpected fit_params "
+                f"{list(fit_params)} — fit() takes no extra keyword arguments."
+            )
+        self.fit(X, y)
+        return self._transform_loo(X)
+
+
 # =============================================================================
 # Provenance / leakage-timing table
 # =============================================================================
@@ -656,6 +810,28 @@ FEATURE_PROVENANCE: tuple[ProvenanceEntry, ...] = (
         "worsened Tier-2 mean (0.8163 -> 0.8150) despite small Tier-1/Tier-3 gains and "
         "lower Tier-2 variance. Rejected for default inclusion; kept reachable as an "
         "opt-in extra feature (extra_features={'ndvi_trend'}), not deleted.",
+    ),
+    ProvenanceEntry(
+        "ndvi_30d_cluster_smoothed",
+        "T-30d (satellite composite, may lag) + spatial_cluster (Stage 7, static)",
+        "Needs verification",
+        "Medium",
+        "Shrinkage-weighted blend of each row's spatial cluster's NDVI mean and the "
+        "global training mean (NDVIClusterFeaturizer, prior_strength=5, same constant "
+        "as ClimateAnomalyFeaturizer's min_group_month_size), fit on train only and "
+        "leave-one-out on the rows it was fit on. Stage 8.5 Task 5-7: see "
+        "docs/experiment_registry.md's F-006 entry for the CV keep/reject call.",
+    ),
+    ProvenanceEntry(
+        "ndvi_90d_cluster_smoothed",
+        "T-90d (satellite composite, may lag) + spatial_cluster (Stage 7, static)",
+        "Needs verification",
+        "Medium",
+        "Shrinkage-weighted blend of each row's spatial cluster's NDVI mean and the "
+        "global training mean (NDVIClusterFeaturizer, prior_strength=5, same constant "
+        "as ClimateAnomalyFeaturizer's min_group_month_size), fit on train only and "
+        "leave-one-out on the rows it was fit on. Stage 8.5 Task 5-7: see "
+        "docs/experiment_registry.md's F-006 entry for the CV keep/reject call.",
     ),
 )
 

@@ -24,6 +24,7 @@ import pandas as pd
 
 from climate_health.features.climate import (
     ClimateAnomalyFeaturizer,
+    NDVIClusterFeaturizer,
     add_heat_exceedance_features,
     add_ndvi_trend_feature,
     add_rainfall_rate_features,
@@ -97,6 +98,14 @@ except ImportError:
 # availability.
 _INTERACTION_FNS["ndvi_trend"] = lambda df: add_ndvi_trend_feature(df)
 
+# Stage 8.5 Task 6: "ndvi_cluster_smoothed" is opt-in like the names above, but it
+# needs fit/transform state (a per-cluster mean learned on train) rather than a
+# stateless dataframe->dataframe function, so it can't live in _INTERACTION_FNS —
+# it gets its own branch in build_feature_matrix and its own FeatureFitState field
+# (ndvi_cluster) instead. Listed here so build_feature_matrix's unknown-extra-
+# feature check recognizes it as valid.
+_STATEFUL_EXTRA_FEATURES = frozenset({"ndvi_cluster_smoothed"})
+
 
 @dataclass(frozen=True)
 class FeatureFitState:
@@ -119,11 +128,17 @@ class FeatureFitState:
     climate_anomaly: ClimateAnomalyFeaturizer
     target_encoding: dict[str, tuple[dict, float]]  # col -> (mapping, global_mean)
     branch_b_columns: tuple[str, ...]
+    # Stage 8.5 Task 6: only set when "ndvi_cluster_smoothed" was opted into via
+    # extra_features at fit time — None otherwise, since an unfit transformer would
+    # be a misleading placeholder rather than a real "not used" signal.
+    ndvi_cluster: NDVIClusterFeaturizer | None = None
 
     def __post_init__(self):
         object.__setattr__(self, "spatial_cluster", copy.deepcopy(self.spatial_cluster))
         object.__setattr__(self, "climate_anomaly", copy.deepcopy(self.climate_anomaly))
         object.__setattr__(self, "target_encoding", copy.deepcopy(self.target_encoding))
+        if self.ndvi_cluster is not None:
+            object.__setattr__(self, "ndvi_cluster", copy.deepcopy(self.ndvi_cluster))
 
 
 # --- Stage 11.2 ADR: two-branch column selection ---------------------------------
@@ -257,7 +272,7 @@ def build_feature_matrix(
         )
     if not fit and fitted_state is None:
         raise ValueError("build_feature_matrix: fit=False requires fitted_state.")
-    unknown = extra_features - _INTERACTION_FNS.keys()
+    unknown = extra_features - _INTERACTION_FNS.keys() - _STATEFUL_EXTRA_FEATURES
     if unknown:
         raise ValueError(f"build_feature_matrix: unknown extra_features {unknown}")
 
@@ -274,6 +289,13 @@ def build_feature_matrix(
     out = spatial.fit_transform(out) if fit else spatial.transform(out)
     out = add_coordinate_polynomial_features(out)
 
+    # Stage 8.5 Task 6 — opt-in, positioned right after spatial_cluster since it
+    # depends on that column existing.
+    ndvi_cluster: NDVIClusterFeaturizer | None = None
+    if "ndvi_cluster_smoothed" in extra_features:
+        ndvi_cluster = NDVIClusterFeaturizer() if fit else fitted_state.ndvi_cluster
+        out = ndvi_cluster.fit_transform(out) if fit else ndvi_cluster.transform(out)
+
     out = add_rainfall_rate_features(out)
     heat_threshold = compute_heat_threshold(out) if fit else fitted_state.heat_threshold
     out = add_heat_exceedance_features(out, threshold=heat_threshold)
@@ -285,7 +307,7 @@ def build_feature_matrix(
     )
     out = climate_anomaly.fit_transform(out) if fit else climate_anomaly.transform(out)
 
-    for name in extra_features:
+    for name in extra_features & _INTERACTION_FNS.keys():
         out = _INTERACTION_FNS[name](out)
 
     target_encoding: dict[str, tuple[dict, float]] = {}
@@ -311,6 +333,7 @@ def build_feature_matrix(
             climate_anomaly=climate_anomaly,
             target_encoding=target_encoding,
             branch_b_columns=branch_b_columns,
+            ndvi_cluster=ndvi_cluster,
         )
         if fit
         else fitted_state

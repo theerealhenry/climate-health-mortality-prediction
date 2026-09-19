@@ -611,3 +611,116 @@ class TestFullPipelineRealData:
             assert col in test.columns
         assert "hot_days_30d" not in train.columns
         assert "hot_days_30d" not in test.columns
+
+
+# =============================================================================
+# NDVIClusterFeaturizer (Stage 8.5 Task 4/5) — shrinkage-smoothed cluster NDVI
+# =============================================================================
+#
+# Motivated directly by scripts/run_stage8_5_ndvi_elevation_audit.py's finding:
+# 2 of 8 placeholder spatial clusters have fewer than 15 rows (cluster 4: n=3,
+# cluster 7: n=2) — a raw per-cluster NDVI mean for those clusters is almost pure
+# noise. These tests pin down the required shrinkage behavior before any
+# implementation exists, per the TDD RED step.
+
+
+def _small_vs_large_cluster_df() -> pd.DataFrame:
+    """20 rows in cluster 0 tightly around 0.8, 2 rows in cluster 1 around 0.1 —
+    global mean sits close to cluster 0 (it dominates by row count), so cluster 1's
+    raw mean (0.1) is far from the global mean and should shrink hard toward it,
+    while cluster 0's raw mean (0.8) is close to the global mean and barely moves
+    either way (a weak-shrinkage claim can't be distinguished from a strong one
+    when the two means already agree)."""
+    rng = np.random.RandomState(0)
+    cluster0 = pd.DataFrame(
+        {
+            "spatial_cluster": 0,
+            "ndvi_30d": 0.8 + rng.normal(0, 0.01, 20),
+        }
+    )
+    cluster1 = pd.DataFrame({"spatial_cluster": 1, "ndvi_30d": [0.1, 0.1]})
+    return pd.concat([cluster0, cluster1], ignore_index=True)
+
+
+class TestNDVIClusterFeaturizer:
+    def test_small_cluster_shrinks_toward_global_mean(self):
+        df = _small_vs_large_cluster_df()
+        featurizer = c.NDVIClusterFeaturizer(value_cols=["ndvi_30d"])
+        featurizer.fit(df)
+
+        raw_cluster1_mean = df.loc[df["spatial_cluster"] == 1, "ndvi_30d"].mean()
+        global_mean = df["ndvi_30d"].mean()
+
+        # transform() on NEW data belonging to cluster 1 (not the fit data) —
+        # genuinely unseen rows, so there's no leave-one-out question here, only
+        # whether the shrinkage math pulls the small cluster toward the global mean.
+        new_row = pd.DataFrame({"spatial_cluster": [1], "ndvi_30d": [0.1]})
+        smoothed = featurizer.transform(new_row)["ndvi_30d_cluster_smoothed"].iloc[0]
+
+        assert abs(smoothed - global_mean) < abs(raw_cluster1_mean - global_mean), (
+            f"smoothed value {smoothed} did not move toward the global mean "
+            f"{global_mean} relative to the raw small-cluster mean {raw_cluster1_mean}"
+        )
+
+    def test_large_cluster_stays_close_to_its_own_raw_mean(self):
+        df = _small_vs_large_cluster_df()
+        featurizer = c.NDVIClusterFeaturizer(value_cols=["ndvi_30d"])
+        featurizer.fit(df)
+
+        raw_cluster0_mean = df.loc[df["spatial_cluster"] == 0, "ndvi_30d"].mean()
+        new_row = pd.DataFrame({"spatial_cluster": [0], "ndvi_30d": [0.8]})
+        smoothed = featurizer.transform(new_row)["ndvi_30d_cluster_smoothed"].iloc[0]
+
+        # 20 rows well above the default prior_strength (5) — shrinkage should be
+        # weak, not "the class works at all" weak but genuinely close.
+        assert abs(smoothed - raw_cluster0_mean) < 0.02
+
+    def test_fit_transform_excludes_a_rows_own_value_from_its_cluster_statistic(self):
+        """Same leave-one-out discipline as ClimateAnomalyFeaturizer.fit_transform:
+        calling transform() on the same data fit() was trained on would let each
+        row's own value inflate its own cluster mean, disproportionately for small
+        clusters. fit_transform() must differ from fit(X).transform(X) for exactly
+        the small cluster, where self-inclusion bias is largest."""
+        df = _small_vs_large_cluster_df()
+        featurizer = c.NDVIClusterFeaturizer(value_cols=["ndvi_30d"])
+
+        loo_result = featurizer.fit_transform(df)
+        naive_result = featurizer.transform(df)  # reuses the same fitted state
+
+        cluster1_mask = df["spatial_cluster"] == 1
+        loo_values = loo_result.loc[cluster1_mask, "ndvi_30d_cluster_smoothed"]
+        naive_values = naive_result.loc[cluster1_mask, "ndvi_30d_cluster_smoothed"]
+
+        assert not loo_values.equals(naive_values), (
+            "fit_transform() produced identical output to transform() on the fit "
+            "data — the leave-one-out exclusion isn't actually excluding anything"
+        )
+
+    def test_unseen_cluster_at_transform_falls_back_to_global_mean_without_raising(self):
+        df = _small_vs_large_cluster_df()
+        featurizer = c.NDVIClusterFeaturizer(value_cols=["ndvi_30d"])
+        featurizer.fit(df)
+
+        global_mean = df["ndvi_30d"].mean()
+        unseen_row = pd.DataFrame({"spatial_cluster": [99], "ndvi_30d": [0.5]})
+        smoothed = featurizer.transform(unseen_row)["ndvi_30d_cluster_smoothed"].iloc[0]
+
+        assert smoothed == pytest.approx(global_mean)
+
+    def test_transform_before_fit_raises_not_fitted(self):
+        featurizer = c.NDVIClusterFeaturizer(value_cols=["ndvi_30d"])
+        with pytest.raises(NotFittedError):
+            featurizer.transform(_small_vs_large_cluster_df())
+
+    def test_real_data_smoke(self, real_train_climate, real_test_climate):
+        """End-to-end against the real pipeline shape, same discipline as
+        ClimateAnomalyFeaturizer's own real-data smoke test above."""
+        featurizer = c.NDVIClusterFeaturizer(value_cols=["ndvi_30d", "ndvi_90d"])
+        train = featurizer.fit_transform(real_train_climate)
+        test = featurizer.transform(real_test_climate)
+
+        for col in ("ndvi_30d_cluster_smoothed", "ndvi_90d_cluster_smoothed"):
+            assert col in train.columns
+            assert col in test.columns
+            assert train[col].notna().all()
+            assert test[col].notna().all()
