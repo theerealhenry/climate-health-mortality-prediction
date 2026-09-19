@@ -51,7 +51,11 @@ onward, not a new Stage 11 finding.
 
 ---
 
-## Stage 11.3 — Model zoo comparison
+## Stage 11.3 — Model zoo comparison (M-001–M-006)
+
+IDs, in table order: **M-001** catboost_native, **M-002**
+logistic_regression_v2, **M-003** extra_trees, **M-004**
+histgradientboosting, **M-005** lightgbm_tuned, **M-006** xgboost_tuned.
 
 Source: `src/climate_health/models/zoo.py::run_zoo`
 Feature pipeline: Stage 11.2 two-branch selection — Branch A (native
@@ -96,7 +100,7 @@ a future feature representation changes this result.
 
 ---
 
-## Stage 13.1 — Tuning scope and locked holdout decision
+## Stage 13.1 — Tuning scope and locked holdout decision (M-007, part 1/3)
 
 Full rationale: `docs/decisions/ADR-001-stage13-tuning-scope-and-holdout.md`.
 
@@ -119,7 +123,7 @@ once, near the end of tuning, per Stage 13.4.
 
 ---
 
-## Stage 13.3 — CatBoost tuning result
+## Stage 13.3 — CatBoost tuning result (M-007, part 2/3)
 
 Source: `src/climate_health/models/tune.py::run_study`. Config: `configs/model_best.yaml`.
 Study `catboost_tuned_tier2` (`sqlite:///optuna_studies.db`), 45 total trials
@@ -146,7 +150,7 @@ its own at n=24.
 
 ---
 
-## Stage 13.4 — Locked-holdout check (spent, one-time)
+## Stage 13.4 — Locked-holdout check (spent, one-time) (M-007, part 3/3)
 
 Full record: `docs/decisions/ADR-001-stage13-tuning-scope-and-holdout.md`,
 "Outcome" section.
@@ -172,7 +176,7 @@ will not be re-evaluated against it.
 
 ---
 
-## Stage 14.1 — Prediction-correlation / diversity analysis (2026-09-13)
+## Stage 14.1 — Prediction-correlation / diversity analysis (2026-09-13) (context for E-001–E-003, not itself an experiment)
 
 Source: `notebooks/04_modeling_experiments.ipynb`, Stage 14.1 cells. OOF
 predictions for `catboost_tuned` (trial #26) plus the three remaining Stage
@@ -213,7 +217,11 @@ result on its own, not a failure of the analysis.
 
 ---
 
-## Stage 14.2 — Ensembling strategies (2026-09-13)
+## Stage 14.2 — Ensembling strategies (2026-09-13) (E-001–E-003)
+
+IDs: **E-001** weighted_average, **E-002** oof_stack, **E-003** rank_average
+(single-model rows in this table are M-001/M-007, not new IDs — they're
+re-listed here only for comparison).
 
 Source: `src/climate_health/models/ensemble.py`, run via
 `scripts/run_stage14_2_ensembling.py` over Stage 14.1's OOF predictions (same
@@ -260,7 +268,7 @@ the standalone `catboost_tuned` config only).
 
 ---
 
-## Stage 14.3 — Repeated-CV validation of the blend (stretch, 2026-09-14)
+## Stage 14.3 — Repeated-CV validation of the blend (stretch, 2026-09-14) (E-001, repeated-CV confirmation)
 
 Source: `scripts/run_stage14_3_repeated_cv_validation.py`. Re-scored the
 Stage 14.2 weighted-average blend (fixed weights: `catboost_tuned=0.6701,
@@ -293,6 +301,57 @@ without carrying an unvalidated blend forward. Per ADR-001, the locked
 `(repeat=0, fold=0)` holdout was not touched in this stretch step and
 remains spent only for the standalone `catboost_tuned` config, exactly as
 already recorded.
+
+---
+
+## Stage 15.1–15.2 — Calibration (M-008, 2026-09-14)
+
+**ID-scheme note (Task 2, Phase 6 retrofit, 2026-09-19):** the blueprint's
+S/F/M/E/C scheme has no dedicated letter for a calibration step. Rather than
+invent a sixth series for a single, narrowly-scoped decision, calibration is
+recorded here as **M-008** — a model-pipeline modification descending
+directly from **M-007** (`catboost_tuned`, Stage 13.3/13.4), the same way a
+hyperparameter change would be. This is a documentation decision made
+retroactively during the Phase 6 registry retrofit; it changes no code and
+re-runs no CV — the calibration work itself was completed and committed
+back in Stage 15 (commits `19bdb9a`, `745a64f`), only its registry entry was
+missing until now.
+
+Source: `src/climate_health/models/calibrate.py`,
+`scripts/run_stage15_2_calibration_comparison.py`. Reuses Stage 14.1's OOF
+predictions (`notebooks/artifacts/stage14_1_oof_predictions.npz`) — no
+retraining, since calibration only ever fits on top of already-computed OOF
+probabilities.
+
+**Stage 15.1 — pre-calibration reliability check.** Per the blueprint's
+explicit instruction ("checked, didn't matter" is a real portfolio artifact
+either way): the reliability diagram
+(`notebooks/artifacts/stage15_1_reliability_diagram.png`) showed real
+miscalibration near p=0.5 for raw `catboost_tuned` OOF predictions —
+calibration was not skipped as unnecessary; Stage 15.2 was run because this
+check found a real reason to.
+
+**Stage 15.2 — raw vs. Platt vs. isotonic**, re-run 2026-09-19 to confirm
+the numbers behind the M-008 promotion decision (fresh run against the
+archived OOF predictions, not re-fit from new data):
+
+| Method | F1@0.5 | AUC | Competition score | Brier |
+|---|---|---|---|---|
+| raw | 0.8088 | 0.8109 | 0.8096 | 0.1648 |
+| **platt** | **0.8135** | 0.8106 | **0.8123** | 0.1668 |
+| isotonic | 0.8115 | 0.8069 | 0.8097 | 0.1639 |
+
+**Decision: promote Platt calibration as M-008, on top of M-007.** Platt
+gives the best competition score (0.8123 vs. raw's 0.8096, +0.0027) and the
+best F1@0.5 (0.8135) — the metric calibration is actually supposed to
+move, per the blueprint's own note that AUC is invariant to monotonic
+recalibration and any real gain shows up in F1, not AUC (AUC is
+correspondingly flat across all three: 0.8106–0.8109). Isotonic
+edges out raw and Platt on Brier score alone (0.1639) but loses on F1 and
+competition score, which are the metrics that actually matter given
+`TargetF1` is fixed at 0.5 and threshold tuning is forbidden — Brier
+being marginally better doesn't outweigh that. **M-008 (`catboost_tuned` +
+Platt calibration) is the Phase 5/6 champion carried into C-001.**
 
 ---
 
@@ -412,12 +471,14 @@ Per the blueprint's S/F/M/E/C submission-numbering discipline (Stage 16). Only
 `C`-series rows are expected to compete for leaderboard position; every row here
 is matched 1:1 to an entry in `submissions/leaderboard_log.csv`.
 
-| Submission ID | Date | Model / config | Tier 1 mean | Tier 2 mean | Tier 2 std | Tier 3 score | Public LB score | Commit |
-|---|---|---|---|---|---|---|---|---|
-| C-001 | 2026-09-14 | catboost_tuned (Stage 13.3, trial 26) + Platt calibration (Stage 15.2) | 0.8136 | 0.8156 | 0.0198 | 0.7963 | **0.830979519** | `19bdb9a` |
+| Submission ID | Experiment ID | Date | Model / config | Tier 1 mean | Tier 2 mean | Tier 2 std | Tier 3 score | Public LB score | Commit |
+|---|---|---|---|---|---|---|---|---|---|
+| C-001 | M-008 | 2026-09-14 | catboost_tuned (M-007, trial 26) + Platt calibration (M-008) | 0.8136 | 0.8156 | 0.0198 | 0.7963 | **0.830979519** | `19bdb9a` |
 
 **C-001 is the only submission made to date, and the first Tier-2-validated
 submission per the blueprint's Stage 16 go/no-go checkpoint.**
+
+Lineage: C-001 descends from **M-007** (CatBoost tuning, Stage 13.1–13.4) plus **M-008** (Platt calibration, Stage 15.1–15.2). **E-001–E-003** (Stage 14.2–14.3 ensembling strategies) were evaluated and rejected — they are not part of C-001's lineage; standalone M-007/M-008 beat every blend on the full repeated-CV check (Stage 14.3).
 
 Commit note: `submissions/submission_745a64f.csv`'s filename references
 `745a64f` (Stage 15.2, the Platt-vs-isotonic comparison), but the actual
