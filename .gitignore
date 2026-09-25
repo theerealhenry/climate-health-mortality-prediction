@@ -41,3 +41,5 @@ catboost_info/
 
 # Stage 15.3: predict.py's default output - the audited copy lives in submissions/
 submission.csv
+
+Claude outputs/
