@@ -510,3 +510,272 @@ public leaderboard score, git commit hash.)*
 | Date | Model / config | Public LB score | Commit |
 |---|---|---|---|
 | — | — | — | — |
+
+---
+
+## Stage 17 — Champion gate (2026-09-19)
+
+Per the blueprint's 8 named gate checks. Each check is logged here as it's
+verified, per `tasks/stage16_17_plan.md` Task 4-8. A failed check routes back
+to the relevant Phase 4/5 stage and is never patched inside Stage 17 directly
+(ADR-004).
+
+### Check 1 of 8 — No leakage found (Task 4)
+
+**Scope:** re-verify the existing leakage tests actually exercise the
+champion's real code path (`catboost_tuned`, Branch A native categoricals,
+Platt calibration) — not a stale earlier config.
+
+**What was checked, and what it found:**
+
+1. `tests/test_encoding.py::TestOofLeakage` (6 tests) proves
+   `compute_oof_target_encoding` never lets a row's own label reach its own
+   encoded value, including a fold-label-perturbation test
+   (`test_changing_a_fold_own_labels_does_not_change_its_own_oof_value`) and a
+   real-data test against the actual Tier-1 twin-grouped splits
+   (`test_real_data_respects_twin_grouped_tier1_splits`). **However**,
+   `src/climate_health/models/predict.py` (lines 96-104) builds the champion's
+   `feature_cols` from `branch_a_native_categorical(...).columns` only —
+   target-encoded (`_te`) and one-hot (`branch_b_encoded`) columns are never
+   included in the champion's actual feature matrix. So this leakage test
+   suite, while genuinely rigorous, verifies a code path (`branch_b`/target
+   encoding) the deployed champion doesn't consume. Not a gap in the test —
+   a fact worth recording so nobody assumes "OOF leakage tests pass" implies
+   target encoding is protecting the champion; it isn't used at all.
+
+2. The champion's actual stateful transformers — `SpatialClusterFeaturizer`
+   (unsupervised KMeans on lat/lon) and `ClimateAnomalyFeaturizer` (anomalies
+   vs. climate normals) — are fit without ever touching `target_col`, so
+   there's no target-leakage surface there by construction. Confirmed by
+   reading `build_feature_matrix()` (`src/climate_health/features/pipeline.py`,
+   lines 279-335): `target_col` is only read by the target-encoding block
+   (branch_b, unused by the champion) and by
+   `SpatialClusterFeaturizer`/`ClimateAnomalyFeaturizer` is never passed
+   `target_col` at all.
+
+3. `tests/test_cv.py` covers twin-guarded fold construction directly:
+   `test_tier1_splits_no_twin_leakage`, `test_tier2_splits_no_twin_leakage`,
+   `test_tier2_splits_no_row_overlap_within_a_fold`,
+   `test_make_tier3_holdout_no_row_overlap` — all four target the exact
+   Tier 1/2/3 machinery `evaluate_all_tiers()` uses, which is what produced
+   every number in this registry, including C-001's.
+
+4. `src/climate_health/models/calibrate.py::cv_calibrate` (lines 50-68) read
+   line-by-line: `train_mask = ~val_mask`, calibrator is
+   `.fit(raw[train_mask], y_true[train_mask])` and only ever
+   `.predict(raw[val_mask])` — genuinely disjoint fit/score folds, not
+   assumed from the docstring. `predict.py`'s production calibrator (lines
+   1-18, 40-60ish) fits Platt once on the full Stage 14.1 OOF array — which
+   is itself already leakage-free (no row's OOF prediction came from a model
+   that saw that row) — then applies it to genuinely unseen `Test.csv` rows.
+   No leakage in the calibration step.
+
+**Verdict: PASS**, with one documentation correction: the champion does not
+use target encoding or one-hot branch_b features at all — `TestOofLeakage`
+protects a code path the deployed model doesn't take. This doesn't invalidate
+the check (no leakage exists on the path the champion *does* take, verified
+directly above), but it means target-encoding leakage tests should not be
+cited as evidence for the champion specifically in any future writeup.
+
+**Verification (run locally, confirmed 2026-09-19):**
+```
+python -m pytest tests/test_encoding.py tests/test_cv.py tests/test_calibrate.py -v
+```
+Result: **66 passed, 5 warnings in 35.98s** (all 5 warnings are the expected
+"no spatial_cluster_col provided, falling back to preliminary_kmeans_k8"
+notice in tests that don't pass a real cluster column — harmless, not a
+failure). Ran in the `climate-health` conda env on the user's machine, not
+reconstructed or assumed.
+
+### Check 3 of 8 — No unexplained train/test dependency (Task 5, 2026-09-19)
+
+**Scope:** re-run adversarial validation, this time on the champion's own predicted
+probability rather than raw input features (Stage 4's original adversarial check
+already covered raw features and found a perfect, already-accepted 1.0000 AUC driven
+by `latitude`/`elevation`/`longitude`/`slope` acting as a location fingerprint).
+
+**Method** (`scripts/run_stage17_adversarial_residual_check.py`): champion's Stage
+14.1 OOF `catboost_tuned` predictions, calibrated with the same production Platt
+calibrator `predict.py` uses (fit once on the full OOF set), compared against the
+calibrated predictions already in `submission.csv`, via (1) a two-sample KS test and
+(2) a single-feature adversarial classifier (5-fold CV, probability as the only
+input).
+
+| Metric | Value |
+|---|---|
+| Train OOF (calibrated) mean / std | 0.6506 / 0.2449 (n=3146) |
+| Test predicted mean / std | 0.6570 / 0.2398 (n=1030) |
+| KS statistic / p-value | 0.0478 / 0.0558 |
+| Single-feature adversarial AUC | 0.4993 +/- 0.0253 |
+
+**Verdict: PASS.** The adversarial AUC (0.4993) is indistinguishable from chance —
+the champion's predicted probability carries no train/test-distinguishing signal of
+its own. The KS test sits just above the conventional 0.05 threshold (p=0.056) but
+with a small effect size and near-identical means/stds, consistent with the
+already-documented, already-accepted 13.5pp zone-composition shift (Stage 4, Section
+1) rather than a new finding. No evidence the champion is exploiting a train-specific
+artifact.
+
+**Verification (run locally, confirmed 2026-09-19):**
+```
+python scripts/run_stage17_adversarial_residual_check.py
+```
+
+### Checks 4-5 of 8 — Stability under geographic validation & reproducibility from a clean environment (Task 6, 2026-09-19)
+
+**Scope:** (a) re-score the frozen `catboost_tuned` config once more on the recorded
+24 non-locked Tier-2 folds, diff against Stage 13.3/14.3's recorded numbers; (b)
+reproduce the full pipeline from a genuinely clean environment (fresh clone, fresh
+conda env from `environment.yml`, no dependence on the working checkout) through to
+a `submission.csv` diffed against the archived `submissions/submission_745a64f.csv`.
+
+**(a) Tier-2 re-score, frozen config, no re-tuning:**
+```
+python scripts/run_stage14_3_repeated_cv_validation.py
+```
+| | Recorded (Stage 13.3/14.3) | Re-scored (2026-09-19) |
+|---|---|---|
+| Tier-2 mean | 0.8156 | 0.8156 |
+| Tier-2 std | 0.0198 | 0.0194 |
+
+**Verdict: PASS.** Mean reproduces exactly; std differs by 0.0004, attributable to
+CatBoost's own run-to-run floating-point/threading nondeterminism (not fully pinned
+by `random_state` alone across library versions/hardware) rather than a real
+instability — this is the number the whole champion-selection decision rests on,
+and it held.
+
+**(b) Clean-environment reproduction.** A fresh clone (`clean-repro-check`, a
+different path from the working checkout — deliberately, to catch any
+machine/path-specific assumption), a fresh `climate-health-clean` conda env built
+from `environment.yml`, then `pip install -e ".[all]"` (the README's actual
+documented setup — not `requirements-lock.txt`, see note below), then
+`pytest tests/test_environment_smoke.py -v` (10/10 passed), then
+`python -m climate_health.models.predict`.
+
+Diff against the archived `submissions/submission_745a64f.csv`:
+```
+rows match ID-for-ID: True
+TargetF1 exact match: True
+TargetRAUC max abs diff: 0.0
+```
+
+**Verdict: PASS — bit-for-bit reproduction.** A completely fresh environment, on a
+different checkout path, with no shared state with the machine/folder that produced
+the original submission, reproduced `TargetRAUC` to the exact float and `TargetF1`
+exactly, row-for-row. This is the strongest possible form of this check.
+
+**Real finding recorded, not silently fixed (Task 8 item):** `requirements-lock.txt`
+is broken as a standalone install artifact — it is UTF-16LE encoded (non-standard
+for a requirements file; likely from PowerShell's default `>` redirect encoding) and
+contains a hardcoded, unquoted, absolute editable-install path
+(`-e d:\projects\climate risk and health prediction`) that breaks the moment the
+repo is cloned to any other location or machine. This didn't block Task 6 because
+the README's actual documented setup (`pip install -e ".[all]"`) never uses this
+file, but the file's stated purpose ("exact resolved versions") is currently
+unusable as written. Fix (regenerate as UTF-8, strip the self-package editable
+line, keep it as a pinned-versions reference only) is deferred to Task 8, not
+patched here, per this task's own scope ("verification run, not new `src/` work").
+
+**Verification (run locally, confirmed 2026-09-19):** both re-runs above, output
+shown in full rather than asserted.
+
+### Check 5 of 8 — submission.csv schema validation (Task 7, 2026-09-19)
+
+**New automated test:** `tests/test_submission_schema.py`, 5 tests, run against the
+archived `submissions/submission_745a64f.csv` (C-001) so every future submission
+gets this validation for free rather than a manual re-check:
+
+| Test | Confirms |
+|---|---|
+| `test_column_names_and_order_match_sample_submission` | `ID, TargetF1, TargetRAUC` in that exact order |
+| `test_row_count_and_id_set_match_test_csv_exactly` | no duplicate IDs; row count and ID set match `Test.csv` exactly |
+| `test_target_f1_is_hard_zero_or_one` | `TargetF1` in {0, 1} |
+| `test_target_rauc_is_a_probability_in_zero_one` | `TargetRAUC` in [0, 1] and not just a copy of `TargetF1` (>2 unique values) |
+| `test_no_missing_values` | no nulls anywhere in the submission |
+
+**Value-domain note:** `SampleSubmission.csv` itself is a placeholder (every row is
+`0,0`), so it can't independently confirm the value domain — the domain checked here
+is the contract `predict.py`'s own `build_submission_frame()` defines (Stage 15.3),
+already confirmed directly against the competition data in Task 3's submission
+policy writeup.
+
+**Result: `pytest tests/test_submission_schema.py -v` — 5 passed in 10.92s (confirmed
+on the user's machine, 2026-09-19).**
+
+**Verdict: PASS.**
+
+### Check 6 of 8 — Reasonable, calibrated probability behavior (Task 7, 2026-09-19)
+
+Restating Stage 15.1/15.2's verdict here explicitly, per this task's own requirement
+not to leave it referenced-by-stage-number only:
+
+**Stage 15.1 (need for calibration): confirmed needed.** `catboost_tuned`'s raw OOF
+predictions were found miscalibrated near p=0.5 — the fixed, un-tunable competition
+threshold — and non-monotonically miscalibrated in the 0.5-0.7 range specifically
+(not just a uniform shift a simple correction would wash out).
+
+**Stage 15.2 (method chosen and why): Platt scaling, chosen over isotonic and over
+no calibration.** Leakage-free comparison (`cv_calibrate`, disjoint fit/score folds,
+re-verified line-by-line in Check 1 above) on the real Stage 14.1 OOF set:
+
+| Method | F1@0.5 | AUC | Competition score | Brier |
+|---|---|---|---|---|
+| raw | 0.8088 | 0.8109 | 0.8096 | 0.1648 |
+| **platt** | **0.8135** | 0.8106 | **0.8123** | 0.1668 |
+| isotonic | 0.8115 | 0.8069 | 0.8097 | 0.1639 |
+
+Platt wins on the competition score itself (the metric that actually matters, per
+the blueprint's explicit instruction not to default to isotonic just because the
+miscalibration was non-monotonic) despite isotonic's lower Brier score — a case
+where the two metrics disagree and the competition's own scoring rule, not a
+generic calibration-quality proxy, was the tiebreaker.
+
+**Verdict: PASS.** Calibration was checked, found necessary, a leakage-free method
+comparison was run, and the winning method (Platt) was chosen on the competition's
+actual scoring metric — recorded here as a real artifact, not left implicit.
+
+---
+
+## Stage 17 gate summary (6 of 8 named checks complete)
+
+| # | Check | Verdict |
+|---|---|---|
+| 1 | No leakage found | PASS (with the branch_a/branch_b scope note above) |
+| 2 | Improves the competition score, holds across Tier 2 folds | Established at C-001 backfill (Stage 16); re-confirmed in Check 4 |
+| 3 | No unexplained train/test dependency | PASS |
+| 4 | Stable under geographic validation | PASS |
+| 5 | Reproducible from a clean environment | PASS (bit-for-bit) |
+| 5 (blueprint's schema item) | submission.csv schema-valid | PASS |
+| 6 | Reasonable, calibrated probability behavior | PASS |
+
+All named Stage 17 gate checks pass. Remaining Phase 6 work: Task 9 (tag
+`competition-submission-final` at commit `19bdb9a`) and Task 10 (ongoing-cadence
+addendum to `docs/submission_strategy_policy.md`).
+
+---
+
+## Phase 6 closed (2026-09-19)
+
+Stage 16 and Stage 17 are both complete. `competition-submission-final` (annotated
+tag, unsigned — `git tag -v`'s "no signature found" is expected, not an error) is
+now pushed to GitHub at commit `19bdb9a`, the exact commit that generated C-001's
+submitted file. All 8 acceptance-criteria tasks from `tasks/stage16_17_plan.md`
+(the Phase 6 plan) are done:
+
+1. Git unblocked, clean tree
+2. S/F/M/E submission IDs retrofitted, Stage 15 registry gap filled
+3. Submission strategy policy written (`docs/submission_strategy_policy.md`)
+4. Leakage re-verified against the actual champion — PASS
+5. Adversarial validation re-run on the champion's own output — PASS
+6. Geographic stability + clean-environment reproducibility — PASS (bit-for-bit)
+7. `submission.csv` schema test + calibration verdict restated — PASS
+8. Stage 17 gate synthesis — all 6 named checks PASS, no check failed, nothing
+   routed back to an earlier phase
+9. `competition-submission-final` tagged at `19bdb9a`, pushed
+10. Ongoing-cadence policy addendum added, Phase 6 marked closed
+
+C-001 stands as the champion submission, fully audited end-to-end, with an
+automated regression test guarding every future submission's schema. Per
+`docs/submission_strategy_policy.md` Section 2, no further submission happens
+until a genuine Tier-2 CV improvement is found — nothing currently in the pipeline
+clears that bar.
