@@ -1,200 +1,164 @@
 <div align="center">
 
-# 🌍 Climate-Sensitive Mortality Prediction
+# Climate-Sensitive Mortality Risk Prediction
 
-### Detecting climate-linked patterns in public health mortality data
+**A validation-first ML system for predicting climate-sensitive mortality on locations it has never seen**
 
-[![Python](https://img.shields.io/badge/python-3.11-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
-[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
-[![Linting: ruff](https://img.shields.io/badge/linting-ruff-D7FF64?logo=ruff&logoColor=black)](https://github.com/astral-sh/ruff)
-[![Experiment Tracking: MLflow](https://img.shields.io/badge/tracking-MLflow-0194E2?logo=mlflow&logoColor=white)](https://mlflow.org/)
-[![Data Validation: Pandera](https://img.shields.io/badge/data%20validation-pandera-2C3E50)](https://pandera.readthedocs.io/)
-[![Status](https://img.shields.io/badge/status-Phase%200%20%E2%80%94%20Foundation%20in%20progress-orange)](docs/PROJECT_BLUEPRINT.md)
+![Python](https://img.shields.io/badge/python-3.11-3776AB?style=flat-square&logo=python&logoColor=white)
+![License](https://img.shields.io/badge/license-MIT-yellow?style=flat-square)
+![CI](https://img.shields.io/badge/CI-GitHub_Actions_(planned)-lightgrey?style=flat-square&logo=githubactions&logoColor=white)
+![Code style](https://img.shields.io/badge/code%20style-black-000000?style=flat-square)
+![Lint](https://img.shields.io/badge/lint-ruff-D7FF64?style=flat-square&logo=ruff&logoColor=black)
+![Tests](https://img.shields.io/badge/tests-pytest-0A9EDC?style=flat-square&logo=pytest&logoColor=white)
+![Tracking](https://img.shields.io/badge/tracking-MLflow-0194E2?style=flat-square&logo=mlflow&logoColor=white)
+![Validation](https://img.shields.io/badge/validation-pandera-2C3E50?style=flat-square)
+![Tuning](https://img.shields.io/badge/tuning-Optuna-2F5AA8?style=flat-square)
+![Models](https://img.shields.io/badge/models-CatBoost%20%7C%20LightGBM%20%7C%20XGBoost-orange?style=flat-square)
+![Serving](https://img.shields.io/badge/serving-FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white)
+![Demo](https://img.shields.io/badge/demo-Streamlit-FF4B4B?style=flat-square&logo=streamlit&logoColor=white)
+![Status](https://img.shields.io/badge/status-Active%20development-brightgreen?style=flat-square)
 
-*An end-to-end, production-grade machine learning pipeline I built for the Climate & Health Risk Prediction Challenge, engineered to the standard I'd want on any production ML system — not a notebook that happens to score well.*
-
-[The Problem](#-the-problem) · [My Approach](#-my-approach--goals) · [Key Findings](#-key-data-driven-findings) · [Architecture](#%EF%B8%8F-architecture) · [Progress](#-project-progress) · [Getting Started](#-getting-started) · [Full Blueprint](docs/PROJECT_BLUEPRINT.md)
+[TL;DR](#tldr) · [Problem](#problem-statement) · [Key Findings](#key-data-findings) · [Architecture](#architecture) · [Validation](#validation-strategy) · [Results](#results) · [Getting Started](#getting-started) · [Limitations](#responsible-ml--limitations)
 
 </div>
 
 ---
 
-## 📌 Overview
+## TL;DR
 
-Health outcomes are shaped by far more than biology — age, geography, living conditions, and environmental exposure all influence vulnerability to illness and mortality, particularly in low-resource settings where shifts in rainfall and temperature translate directly into elevated health risk. In this project I build a supervised machine learning system that predicts whether a recorded death falls into a **climate-sensitive category**, using demographic, geographic, and climate/environmental data.
+- **Problem:** predict whether a recorded death falls into a climate-sensitive category, using demographic, geographic, and climate/environmental data from a low-resource setting.
+- **Core challenge:** every test-set location is geographically unseen during training, which breaks the usual random-split validation and demands a validation strategy built around that fact rather than around convenience.
+- **Approach:** schema-validated data, a tested sklearn-compatible feature pipeline, a three-tier geography-aware cross-validation architecture, a model zoo compared under that architecture, Optuna tuning, an evaluated (and ultimately rejected) ensembling stage, and probability calibration — all logged in an experiment registry with a stated hypothesis per experiment.
+- **Headline result:** the champion model (tuned CatBoost with Platt calibration) reaches 0.8156 (± 0.0198) under repeated geographic cross-validation and 0.831 on a fully unseen, external held-out evaluation set — the held-out score exceeded local CV, meaning no overfitting to validation.
 
-I built it as two things at once, deliberately, on one shared engineering foundation:
+## Problem statement
 
-1. **A competition entry** for the Climate & Health Risk Prediction Challenge, targeting first place.
-2. **A senior-level ML engineering portfolio piece** — data validation, rigorous experiment design, MLflow-tracked experimentation, tested and typed production code, CI/CD, and a deployed, interactive model, documented to the standard I'd expect from a production ML system.
+In low-resource settings, mortality outcomes are shaped by demographic vulnerability and environmental exposure together, not by biology alone. This project builds a supervised classifier that outputs, for each mortality record:
 
-The full architectural reasoning, every design decision I made (including the ones I considered and rejected), and my stage-by-stage execution plan live in **[`docs/PROJECT_BLUEPRINT.md`](docs/PROJECT_BLUEPRINT.md)** — the single source of truth for this repository. This README is the front door; the blueprint is where I show my full engineering judgment.
+- a binary prediction of whether the death falls into a climate-sensitive category
+- the predicted probability of that outcome
 
-## 🎯 The Problem
+**Evaluation metric:** 0.6 × F1 + 0.4 × ROC-AUC, at a fixed 0.5 decision threshold (threshold tuning not allowed by design). A fixed threshold makes calibration a first-class concern rather than a nice-to-have: I can't tune my way to a good F1 score by hunting for a favorable cutoff, so the model's raw probabilities have to already be well-behaved around 0.5. That constraint shapes the model selection, calibration, and validation design throughout this repository.
 
-The challenge asks for a binary classifier that outputs, for each mortality record:
+Data: a public climate and health mortality dataset (~3,100 training records, single country).
 
-- `TargetF1` — a binary prediction (climate-sensitive or not), evaluated at a **fixed 0.5 threshold — threshold tuning is explicitly forbidden by the competition rules.**
-- `TargetRAUC` — the predicted probability of the positive class.
+## Key data findings
 
-The leaderboard score is a weighted blend of both:
-
-$$\text{Final Score} = 0.60 \times \text{F1-Score} + 0.40 \times \text{ROC-AUC}$$
-
-That fixed-threshold rule is more consequential than it first appears: it means I can't lean on the usual competition trick of hunting for the best decision threshold post hoc. Winning F1 at a threshold I don't control means my model's probabilities have to be genuinely well-calibrated around 0.5 — which shapes my model selection, calibration strategy, and validation design throughout this repository (see [`docs/PROJECT_BLUEPRINT.md`](docs/PROJECT_BLUEPRINT.md), Stage 15).
-
-**Competition window:** 18 Aug 2026 – 19 Oct 2026 · **Prize:** 🥇 $500 (1st place) — my target.
-
-## 🧭 My Approach & Goals
-
-My guiding principle is that winning the competition and building a credible portfolio piece are not in tension — I pursue both on one shared foundation (data validation, feature pipelines, cross-validation, MLflow, tests) rather than building a rigorous pipeline for the competition and bolting on "portfolio polish" afterward. Concretely, this means:
-
-- **Evidence over assumption.** I verify every structural claim about the data — geographic overlap between train and test, leakage risk, near-determinism of the target — against the raw files before letting it drive a design decision. See [Key Data-Driven Findings](#-key-data-driven-findings) below.
-- **A validation strategy that respects the real generalization problem**, not a convenient one. Random K-fold looks impressive locally and lies about the private leaderboard, so I use a multi-tier, geography-aware validation architecture instead (details in my blueprint, Phase 2).
-- **Disciplined experimentation.** Every submission I make answers a stated question (an `S`/`F`/`M`/`E`/`C` series scheme — sanity, feature, model, ensemble, champion) and gets logged with its hypothesis and result — I don't submit just because I have a new model.
-- **Production standards from day one.** Schema validation, tested feature transformers, experiment tracking, and CI are first-class work for me starting in Phase 0, not deferred to "if there's time."
-- **Honest scope.** I calibrate my claims about real-world impact to what a ~3,100-row, single-country, single-competition dataset can actually support — see [Responsible ML & Limitations](#%EF%B8%8F-responsible-ml--limitations).
-
-## 🔍 Key Data-Driven Findings
-
-These aren't assumptions — I verified them directly against `Train.csv`, `Test.csv`, and `climate_features.csv` during my Stage 1 data forensics pass, and they actively shape my modeling strategy:
+Verified directly against the raw data during forensics, not assumed — see `docs/PROJECT_BLUEPRINT.md` §0.1 and `docs/data_dictionary.md` for full methodology.
 
 | Finding | Value | Why it matters |
 |---|---|---|
-| Train/test geographic overlap | **0 of 43** training coordinates appear in test | Rules out naive random validation; drives my geography-aware, multi-tier CV strategy |
-| Train/test location-name overlap | **1 of 39** locations shared | Confirms the coordinate finding through an independent signal |
-| Non-independent "twin" records | **~55 groups** share identical place + death date | A second, distinct leakage mechanism, which I guard against separately from geographic generalization |
-| Strongest single predictor | `age`, r ≈ **−0.44** | Younger age strongly predicts climate-sensitive death — consistent with real epidemiology (infant/child vulnerability to climate-linked illness) |
-| Target balance | **65% / 35%** | Moderate imbalance, informs my class-weighting and calibration choices |
-| Near-deterministic proxy for target | **None found** | Age alone reaches ≈0.74 AUC — strong signal, not a data leak (would be ≈0.99 if the target were mechanically derivable) |
+| Train/test coordinate overlap | 0 of 43 training coordinates appear in test | Rules out random-split validation entirely; drives the geography-aware, multi-tier CV design |
+| Train/test location-name overlap | 1 of 39 locations shared | Confirms the coordinate finding through an independent signal |
+| Non-independent "twin" records | ~55 groups share identical place + death date (finer key), ~49 groups by location + date (~3% of training rows) | A second, distinct leakage mechanism, guarded against separately from geographic generalization |
+| Strongest single predictor | `age`, r ≈ −0.44, ≈0.74 AUC alone | A real, strong signal consistent with known age-related vulnerability, not a leak |
+| Target balance | 65% / 35% | Moderate imbalance; informs class weighting and calibration |
+| Near-deterministic proxy for the target | None found | A mechanically derived target would show ≈0.95–0.99 AUC from a single feature; the actual ceiling is far below that |
 
-Full methodology and my complete forensics writeup: [`docs/PROJECT_BLUEPRINT.md §0.1`](docs/PROJECT_BLUEPRINT.md).
+## Architecture
 
-## 🏗️ Architecture
-
-I run two tracks — competition research and production engineering — on one shared foundation, converging on a single champion model:
-
-```
-                       SHARED FOUNDATION
-        data validation → features → CV → tests → MLflow
-                             │
-        ┌────────────────────┴────────────────────┐
-        ▼                                          ▼
-  COMPETITION RESEARCH                     PRODUCTION SYSTEM
-  forensics · EDA · climate & spatial      API · UI · CI/CD · Docker ·
-  feature research · model zoo ·           docs · model card
-  tuning · ensembling · calibration        (built once there's a
-        │                                   stable artifact to serve)
-        └────────────────────┬────────────────────┘
-                              ▼
-                       CHAMPION MODEL
-                              │
-                 ┌────────────┴────────────┐
-                 ▼                         ▼
-             FastAPI                  Streamlit
-           (inference)              (interactive demo)
+```mermaid
+flowchart TD
+    A[Raw data - train, test, climate features] --> B[Pandera schema validation]
+    B --> C[Feature pipeline - temporal, spatial, climate, demographic, encoding transformers]
+    C --> D[Geography-aware CV - Tier 1 standard, Tier 2 five by five repeated group k-fold, Tier 3 locked holdout]
+    D --> E[Model zoo - baselines, LightGBM, XGBoost, CatBoost, ExtraTrees, HistGB, logistic regression]
+    E --> F[Optuna tuning]
+    F --> G[Ensembling - evaluated, rejected]
+    G --> H[Platt calibration]
+    H --> I[Eight-check champion gate]
+    I --> J[Champion model]
+    J --> K[FastAPI inference]
+    J --> L[Streamlit demo]
+    M[(MLflow tracking)] -.-> E
+    M -.-> F
+    N[[CI - ruff and pytest]] -.-> B
+    N -.-> C
 ```
 
-Nine phases, 24 stages, each with a stated rationale and deliverable — see my [full blueprint](docs/PROJECT_BLUEPRINT.md) for the complete breakdown, including my validation hierarchy, the climate-feature provenance/leakage-timing table, and my champion-model promotion gates.
+The pipeline is linear and gated, not exploratory-notebook-driven: nothing is promoted to the next stage without passing the checks the previous stage defined. MLflow tracks every model-zoo run and every Optuna trial so results are reproducible without re-running the search. CI (ruff plus pytest, configured but not yet wired into a live GitHub Actions workflow — see Getting Started) is the mechanism meant to keep the feature pipeline and CV code honest as they change. The champion gate is deliberately the narrowest point in the diagram: many candidates enter, one leaves.
 
-## 📁 Repository Structure
+## Validation strategy
+
+Random K-fold cross-validation looks fine on paper here and is wrong in practice: with zero coordinate overlap between train and test, a random split lets the model see nearby locations during training that it will never see at inference, which systematically overstates how well it generalizes. Three tiers are reported together for every candidate, not just one convenient number:
+
+| Tier | Design | Purpose |
+|---|---|---|
+| Tier 1 | Standard stratified K-fold | A baseline reference number, known to be optimistic |
+| Tier 2 | 5×5 repeated, group-based K-fold on geographic clusters | The primary generalization signal — repeated to get a mean and standard deviation across folds, not a single lucky (or unlucky) split |
+| Tier 3 | A one-time locked holdout, spent once per candidate | An additional, independent check against overfitting to the Tier 2 loop itself |
+
+The "twin" records — different individuals who died on the same day in the same place and therefore share identical climate features — are grouped explicitly so they never split across train and validation within a fold; this is a second, mechanically distinct risk from geographic generalization and is guarded separately (`docs/PROJECT_BLUEPRINT.md` §0.1). The Tier 3 holdout fold was locked before looking at any per-fold score, specifically to avoid picking a convenient split after the fact — the full reasoning is in [`docs/decisions/ADR-001-stage13-tuning-scope-and-holdout.md`](docs/decisions/ADR-001-stage13-tuning-scope-and-holdout.md).
+
+## Results
+
+Model comparison under the full three-tier CV (`docs/stage11_3_model_zoo_scorecard.csv`):
+
+| Model | Tier 1 mean | Tier 2 mean ± std | Tier 3 score |
+|---|---|---|---|
+| CatBoost (native categoricals) | 0.808 | 0.802 ± 0.011 | 0.795 |
+| Logistic regression | 0.807 | 0.711 ± 0.176 | 0.789 |
+| Extra Trees | 0.805 | 0.813 ± 0.025 | 0.791 |
+| HistGradientBoosting | 0.800 | 0.795 ± 0.009 | 0.800 |
+| LightGBM (tuned) | 0.798 | 0.793 ± 0.012 | 0.794 |
+| XGBoost (tuned) | 0.797 | 0.795 ± 0.009 | 0.793 |
+
+![Model zoo comparison chart](docs/stage11_3_model_zoo_chart.png)
+
+Logistic regression is the clearest argument for this whole validation design: it scores 0.807 on Tier 1, competitive with everything else, then collapses to 0.711 ± 0.176 under geography-aware CV — a standard deviation nine times larger than the tree models'. A random-split evaluation would never have surfaced that instability; it's exactly the failure mode Tier 2 exists to catch.
+
+**Champion: tuned CatBoost + Platt calibration.** Local repeated geographic CV: 0.8156 ± 0.0198. Score on a fully unseen, external held-out evaluation set: 0.831. The held-out score exceeded local CV rather than falling short of it, which is the direction that indicates the validation estimate was not overly optimistic.
+
+### What didn't work
+
+- **Ensembling.** Weighted averaging, out-of-fold stacking, and rank averaging were all evaluated against the tuned single model under the same repeated geographic CV. None beat the single model once re-checked across the full repeated-CV loop rather than a single fold split — the single tuned model was kept.
+- **Additional feature experiments.** Three further engineered features, derived from the existing spatial and climate signal, were tested and rejected because they did not improve the Tier 2 mean without increasing its variance — the same standing decision rule applied to every experiment in this project (`docs/experiment_registry.md`).
+
+Both are presented here as evidence the process worked, not as gaps: an experiment that is tested, found not to help, and left out is a completed piece of work, not a stalled one.
+
+## Engineering practices
+
+| Practice | Detail |
+|---|---|
+| Schema validation | `pandera` contracts for every raw file, enforcing dtypes, value ranges, categorical membership, ID uniqueness/pattern, and cross-field consistency checks; validated lazily so a bad file reports every violation at once |
+| Feature transformers | sklearn-compatible (fit/transform), so training and inference share the exact same code path |
+| Testing | 20 pytest files covering schemas, feature transformers, the CV splitter, model calibration, ensembling, and an environment smoke test |
+| Experiment tracking | MLflow, SQLite-backed, from the first baseline onward |
+| Hyperparameter tuning | Optuna, budgeted and scoped in a written ADR (`docs/decisions/`), not run ad hoc |
+| Decision records | Architecture and process decisions recorded as ADRs, including alternatives considered and rejected |
+| Experiment registry | Every experiment logged with its hypothesis, result, and decision (`docs/experiment_registry.md`) — including the rejected ones |
+| Pre-commit | ruff, black, nbstripout, running against the project's own pinned tool versions |
+| Pinned environments | `pyproject.toml` (dependency ranges) plus `requirements-lock.txt` (exact resolved versions) |
+
+## Repository structure
 
 ```
-├── .github/workflows/     # CI (lint/test on every push) + CD (build/deploy on tag)
-├── configs/                # YAML configs: paths, model hyperparameters, CV settings
+├── configs/                  # YAML: paths, model hyperparameters, CV settings
 ├── data/
-│   ├── raw/                 # Train.csv, Test.csv, climate_features.csv (versioned as-is)
-│   ├── interim/              # Merged, type-cast, pre-feature-engineering
-│   ├── processed/             # Final model-ready feature matrices
-│   └── external/               # Additional downloaded climate/geo data
+│   └── raw/                  # Train.csv, Test.csv, climate_features.csv
 ├── docs/
-│   ├── PROJECT_BLUEPRINT.md    # Single source of truth — full architecture & rationale
+│   ├── PROJECT_BLUEPRINT.md  # full architecture and rationale
 │   ├── data_dictionary.md
-│   ├── model_card.md            # Added at Stage 22
-│   └── retrospective.md          # Added at Stage 24, post competition close
-├── notebooks/               # My research record — see notebooks/README.md for the
-│                             # "notebooks investigate, src/ implements" principle
-├── reference/                # Untouched copy of the official competition starter notebook
+│   ├── experiment_registry.md
+│   └── decisions/            # ADRs
+├── notebooks/                 # research record - see notebooks/README.md
 ├── src/climate_health/
-│   ├── data/                  # Loading, pandera schema validation
-│   ├── features/                # sklearn-compatible transformers (temporal, spatial, climate)
-│   ├── models/                   # Training, calibration, ensembling, inference
-│   ├── evaluation/                # CV strategy, metrics, experiment/submission logging
+│   ├── data/                  # loading, pandera schema validation
+│   ├── features/              # sklearn-compatible transformers
+│   ├── models/                 # training, calibration, ensembling, inference
+│   ├── evaluation/              # CV strategy, metrics
 │   └── utils/
 ├── app/
-│   ├── api/                    # FastAPI inference service (Phase 7)
-│   └── streamlit_app/            # Interactive demo UI (Phase 7)
-├── tests/                     # pytest — schemas, transformers, CV splitter, environment smoke test
-├── submissions/                 # Every submission I make, logged with its hypothesis and result
-├── pyproject.toml                # Dependencies (pinned ranges) + tool config
-├── environment.yml                # Conda bootstrap (Python 3.11 + pip)
-└── requirements-lock.txt           # Exact resolved versions, generated post-install
+│   ├── api/                    # FastAPI inference service (not yet implemented)
+│   └── streamlit_app/          # interactive demo (not yet implemented)
+├── tests/                      # pytest
+├── submissions/                 # every generated prediction file, logged with its metadata
+├── pyproject.toml               # dependencies (pinned ranges) + tool config
+├── environment.yml              # conda bootstrap (Python 3.11 + pip)
+└── requirements-lock.txt        # exact resolved versions
 ```
 
-## 🧰 Tech Stack
-
-| Concern | Tools |
-|---|---|
-| Data validation | Pandera |
-| Modeling | scikit-learn · LightGBM · XGBoost · CatBoost |
-| Spatial features | k-means clustering on coordinates + climate normals |
-| Hyperparameter tuning | Optuna |
-| Experiment tracking | MLflow (SQLite-backed) |
-| Interpretability | SHAP |
-| Testing | pytest |
-| CI/CD | GitHub Actions |
-| Serving | FastAPI |
-| Demo UI | Streamlit |
-| Environment | conda (Python 3.11) + pip, pinned via `pyproject.toml` |
-
-## 🧪 Methodology Highlights
-
-- **Multi-tier cross-validation** — I report standard stratified K-fold, geography-grouped K-fold, and a test-like geographic holdout together for every candidate model, not just one convenient CV number, because the confirmed zero coordinate overlap between train and test means a single random split would systematically overstate performance.
-- **Two leakage mechanisms, guarded separately** — I treat location-generalization leakage (unseen test locations) and non-independence leakage (same-day, same-place "twin" records) as mechanically distinct risks, not conflated into one.
-- **Calibration checked, not assumed** — because the F1 threshold is fixed at 0.5 by competition rule, I inspect the model's raw reliability diagram before deciding whether Platt/isotonic calibration is even needed, rather than applying it reflexively.
-- **A champion-model gate** — I don't call any candidate final until it passes reproducibility, leakage, and cross-fold stability checks (Phase 6 of my blueprint).
-
-## 📊 Project Progress
-
-*I update this after every stage I complete — see [`docs/PROJECT_BLUEPRINT.md`](docs/PROJECT_BLUEPRINT.md) for the full stage-by-stage detail behind each row.*
-
-| Phase | Focus | Status |
-|---|---|---|
-| **0 — Foundation** | Repository, environment, data contracts | ✅ Complete — Stage 1 (repo & environment) and Stage 2 (data contracts) both done |
-| 1 — Data Understanding | Forensics, EDA | 🟡 Up next |
-| 2 — Validation Architecture | Multi-tier cross-validation | ⬜ Not started |
-| 3 — Feature Research | Temporal, spatial, climate enrichment | ⬜ Not started |
-| 4 — Baselines & Model Zoo | LightGBM · XGBoost · CatBoost | ⬜ Not started |
-| 5 — Optimization & Ensembling | Optuna · stacking · calibration | ⬜ Not started |
-| 6 — Competition Discipline | Submission registry, champion gate | ⬜ Not started |
-| 7 — Production Engineering | Testing, CI/CD, deployment | ⬜ Not started |
-| 8 — Responsible ML & Docs | SHAP, model card, retrospective | ⬜ Not started |
-
-<details>
-<summary><strong>Stage 1 details (complete)</strong></summary>
-
-- Scaffolded the full repository skeleton per my blueprint
-- Set up a conda environment (Python 3.11) + `pyproject.toml` dependency set, version-pinned for verified mutual compatibility
-- Wrote an environment smoke test (`tests/test_environment_smoke.py`) — 10/10 passing: every core library imports cleanly and completes a real fit/predict/log round-trip (LightGBM, XGBoost, CatBoost, scikit-learn, SHAP, MLflow, Pandera)
-- Standardized MLflow on a SQLite tracking backend after my smoke test caught MLflow 3.x deprecating the plain filesystem store — a real finding, not a hypothetical, and exactly what this stage is for
-- Configured pre-commit hooks (ruff, black, nbstripout) to run against my project's own pinned tools rather than pre-commit's network-dependent hosted hook environments
-
-</details>
-
-<details>
-<summary><strong>Stage 2 details (complete)</strong></summary>
-
-- Wrote pandera `DataFrameSchema` contracts for every raw file (`src/climate_health/data/schemas.py`): `TRAIN_SCHEMA`, `TEST_SCHEMA`, `CLIMATE_FEATURES_SCHEMA`, `SAMPLE_SUBMISSION_SCHEMA`
-- Contracts enforce column dtypes, value ranges (e.g. latitude/longitude bounded to Uganda's envelope), categorical membership, ID uniqueness and pattern (`ID_[8 hex chars]`), non-null constraints, and two cross-field consistency checks: `max_temperature >= avg_temperature >= min_temperature` and `rain_sum_90d >= rain_sum_30d >= rain_sum_7d`
-- Schemas validate lazily (`lazy=True`) so a bad file reports every violation in one pass, not just the first
-- Built schema-validated loaders (`src/climate_health/data/loaders.py`) — `load_train()`, `load_test()`, `load_climate_features()`, `load_sample_submission()`, `load_all()` — so nothing downstream ever calls `pd.read_csv` on a raw file directly
-- Wired a CI-ready CLI gate (`src/climate_health/data/validate.py`, run via `make validate`) that validates every raw file and exits non-zero on any contract violation
-- Verified all four real raw files validate cleanly against their contracts, and wrote 15 tests (`tests/test_schemas.py`) covering both the positive case and 11 deliberately corrupted negative cases (duplicate IDs, malformed ID patterns, broken temperature/rainfall ordering, invalid categories, out-of-range coordinates, null required fields, leaked target columns, missing files) — every corruption is confirmed caught, not just assumed to be
-
-</details>
-
-## 🚀 Getting Started
+## Getting started
 
 ```bash
 git clone https://github.com/theerealhenry/climate-health-mortality-prediction.git
@@ -204,48 +168,56 @@ conda env create -f environment.yml
 conda activate climate-health
 pip install -e ".[all]"
 
-pytest tests/test_environment_smoke.py -v   # verify the environment before doing anything else
+pytest tests/test_environment_smoke.py -v   # verify the environment first
 ```
 
-## 📈 Results
+Common tasks (see `Makefile`):
 
-*I'll populate this as I train and validate models (Phase 4 onward). Local cross-validation scores, public leaderboard scores, and — once the competition closes — the private leaderboard score will be reported here alongside the CV-vs-private gap, the strongest evidence for whether my validation strategy actually worked.*
+```bash
+make validate    # run pandera schema validation against the raw data
+make lint        # ruff + black --check
+make test        # full pytest suite
+```
 
-## 🖥️ Live Demo
+Generate predictions from the trained pipeline:
 
-*Coming in Phase 7: a FastAPI inference endpoint behind a Streamlit UI, deployed as a single Hugging Face Space. I'll add the link here once it's live.*
+```bash
+python -m climate_health.models.predict
+```
 
-## ⚖️ Responsible ML & Limitations
+Open the MLflow UI to inspect tracked runs:
 
-This model estimates whether a mortality record is likely to belong to the climate-sensitive category as defined by this competition's dataset. It's a research and decision-support demonstration — **not a clinical or individual mortality-risk tool.**
+```bash
+mlflow ui --backend-store-uri sqlite:///mlflow.db
+```
 
-I built this to demonstrate a methodology genuinely used in public-health decision support: combining demographic, geographic, and environmental records to identify climate-sensitive mortality patterns, with longer-term potential to inform climate-health surveillance and resource planning. It doesn't itself save lives — it's a model I trained on ~3,100 records from a single competition dataset, covering one country over a 15-year span, with only 39 distinct training locations. I state those limitations plainly in my [model card](docs/model_card.md) (added at Stage 22), not glossed over.
+The FastAPI inference service and Streamlit demo (`app/`) are scaffolded but not yet implemented — coming soon.
 
-## 🗺️ Roadmap
+## Responsible ML & limitations
 
-| Week | Focus |
-|---|---|
-| 1 | Foundation, data forensics, deep EDA, first baselines |
-| 2 | Validation architecture locked in, temporal/demographic features |
-| 3 | Spatial + climate feature research; first validated submission; go/no-go checkpoint vs. public leaderboard |
-| 4 | Full model zoo, initial comparison table |
-| 5 | Hyperparameter tuning, ensembling |
-| 6 | Calibration, robustness, champion gate, final competition submissions |
-| 7 (close: 19 Oct) | Buffer for last CV-guided submissions |
-| Post-close | Deployment, interpretability, documentation, retrospective |
+This model estimates whether a mortality record is likely to belong to a climate-sensitive category as defined by this dataset. It is a research and methodology demonstration, **not a clinical or individual mortality-risk tool, and not validated for policy use.**
 
-## 👤 About Me
+Concrete limits on what this project can support: ~3,100 training records from a single country, covering 39 distinct training locations over a multi-year span. Every test location is geographically unseen relative to training, which is precisely the condition the validation strategy is built around — but it also means the model's demonstrated generalization is to *a* new location within this dataset's geography, not to an arbitrary new setting. The label itself is defined by this dataset's own criteria, not by an independent clinical determination. Age is the strongest predictor, and its relationship with the target is non-monotonic across age bands; any use of this model's outputs should treat age-group-level behavior as a fairness dimension worth checking explicitly, not just aggregate accuracy.
+
+## Roadmap
+
+- Model card documenting intended use, training data, and limitations in full
+- FastAPI inference service and Streamlit demo (`app/`)
+- Containerized deployment (Docker)
+- Written retrospective on what worked, what didn't, and what I'd change
+
+## Author
 
 **Henry Otsyula**
-Data Scientist & Machine Learning Engineer
+ML Engineer
 
-GitHub: [@theerealhenry](https://github.com/theerealhenry) · LinkedIn: [henry-otsyula-datascientist](https://www.linkedin.com/in/henry-otsyula-datascientist) · Email: [henryotsyula01@gmail.com](mailto:henryotsyula01@gmail.com)
+[LinkedIn](https://www.linkedin.com/in/henry-otsyula-datascientist) · [GitHub](https://github.com/theerealhenry) · [henryotsyula01@gmail.com](mailto:henryotsyula01@gmail.com)
 
-## 🙏 Acknowledgments
-
-- The competition organizers, for a dataset and problem framing grounded in a genuine public-health question
-- **CHIRPS Daily** (rainfall), **ERA5-Land** (temperature/atmospheric), **MODIS MOD13Q1** (NDVI), and **SRTM** (elevation/slope) — the public climate and environmental data sources underlying the downloaded climate features I used
-
-## 📄 License
+## License
 
 MIT — see [`LICENSE`](LICENSE).
+
+<!-- TODO after 2026-10-19: add specific engineered feature descriptions and recipes
+     (currently withheld by design), tuned hyperparameter values (currently only in
+     configs/model_best.yaml, not narrated here), and a direct link to the model card
+     once docs/model_card.md exists. -->
