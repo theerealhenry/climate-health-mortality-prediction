@@ -1,4 +1,4 @@
-﻿<div align="center">
+<div align="center">
 
 # Climate-Sensitive Mortality Risk Prediction
 
@@ -149,8 +149,8 @@ Both are presented here as evidence the process worked, not as gaps: an experime
 │   ├── evaluation/              # CV strategy, metrics
 │   └── utils/
 ├── app/
-│   ├── api/                    # FastAPI inference service (not yet implemented)
-│   └── streamlit_app/          # interactive demo (not yet implemented)
+│   ├── api/                    # FastAPI inference service (Stage 19.1)
+│   └── streamlit_app/          # interactive demo (Stage 19.2)
 ├── tests/                      # pytest
 ├── submissions/                 # every generated prediction file, logged with its metadata
 ├── pyproject.toml               # dependencies (pinned ranges) + tool config
@@ -191,7 +191,29 @@ Open the MLflow UI to inspect tracked runs:
 mlflow ui --backend-store-uri sqlite:///mlflow.db
 ```
 
-The FastAPI inference service and Streamlit demo (`app/`) are scaffolded but not yet implemented — coming soon.
+## Demo
+
+Two ways to run the Phase 7 production build locally, in two terminals.
+
+Terminal A — the inference API (Task 19.1):
+
+```bash
+uvicorn app.api.main:app
+```
+
+Terminal B — the Streamlit demo (Task 19.2), which calls that API rather than loading the model directly:
+
+```bash
+streamlit run app/streamlit_app/main.py
+```
+
+The demo has two pages. **Record Explorer** picks a real Train.csv/Test.csv record (real location, date, real climate values) and lets you change only the demographic fields — age, gender, zone — as a genuine what-if:
+
+![Record Explorer](docs/images/streamlit_record_explorer.png)
+
+**Batch Upload** reproduces the actual submission pipeline over an uploaded CSV (or a sample of the real Test.csv), one row at a time through the same `/predict` endpoint, downloadable as a submission-shaped CSV:
+
+![Batch Upload](docs/images/streamlit_batch_upload.png)
 
 ## Releases
 
@@ -206,7 +228,6 @@ Concrete limits on what this project can support: ~3,100 training records from a
 ## Roadmap
 
 - Model card documenting intended use, training data, and limitations in full
-- FastAPI inference service and Streamlit demo (`app/`)
 - Containerized deployment (Docker)
 - Written retrospective on what worked, what didn't, and what I'd change
 
