@@ -1,4 +1,4 @@
-<div align="center">
+﻿<div align="center">
 
 # Climate-Sensitive Mortality Risk Prediction
 
@@ -6,7 +6,7 @@
 
 ![Python](https://img.shields.io/badge/python-3.11-3776AB?style=flat-square&logo=python&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-yellow?style=flat-square)
-![CI](https://img.shields.io/badge/CI-GitHub_Actions_(planned)-lightgrey?style=flat-square&logo=githubactions&logoColor=white)
+[![CI](https://github.com/theerealhenry/climate-health-mortality-prediction/actions/workflows/ci.yml/badge.svg)](https://github.com/theerealhenry/climate-health-mortality-prediction/actions/workflows/ci.yml)
 ![Code style](https://img.shields.io/badge/code%20style-black-000000?style=flat-square)
 ![Lint](https://img.shields.io/badge/lint-ruff-D7FF64?style=flat-square&logo=ruff&logoColor=black)
 ![Tests](https://img.shields.io/badge/tests-pytest-0A9EDC?style=flat-square&logo=pytest&logoColor=white)
@@ -76,7 +76,7 @@ flowchart TD
     N -.-> C
 ```
 
-The pipeline is linear and gated, not exploratory-notebook-driven: nothing is promoted to the next stage without passing the checks the previous stage defined. MLflow tracks every model-zoo run and every Optuna trial so results are reproducible without re-running the search. CI (ruff plus pytest, configured but not yet wired into a live GitHub Actions workflow — see Getting Started) is the mechanism meant to keep the feature pipeline and CV code honest as they change. The champion gate is deliberately the narrowest point in the diagram: many candidates enter, one leaves.
+The pipeline is linear and gated, not exploratory-notebook-driven: nothing is promoted to the next stage without passing the checks the previous stage defined. MLflow tracks every model-zoo run and every Optuna trial so results are reproducible without re-running the search. CI (ruff, black, and the full pytest suite, running on every push and pull request against main via GitHub Actions) is the mechanism meant to keep the feature pipeline and CV code honest as they change. The champion gate is deliberately the narrowest point in the diagram: many candidates enter, one leaves.
 
 ## Validation strategy
 
@@ -192,6 +192,10 @@ mlflow ui --backend-store-uri sqlite:///mlflow.db
 ```
 
 The FastAPI inference service and Streamlit demo (`app/`) are scaffolded but not yet implemented — coming soon.
+
+## Releases
+
+Two tags mean different things in this repository: `competition-submission-final` marks the exact commit submitted to the competition and is never moved or reused. Deployment releases (`v1.0.0`, `v1.1.0`, ...) are cut independently, whenever the production system (API, demo, deployment) has a stable state worth shipping — pushing one triggers `release.yml`: build the Docker image, test it against the built image, then deploy to the live Hugging Face Space. The two naming schemes are kept deliberately separate so a deployment release can never be mistaken for, or accidentally collide with, the frozen competition artifact.
 
 ## Responsible ML & limitations
 

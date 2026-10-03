@@ -1,0 +1,39 @@
+﻿name: Release (CD)
+
+# Deployment releases only -- distinct from `competition-submission-final`,
+# which tags the frozen competition submission commit and is never a trigger
+# here. A deployment release (v1.0.0, v1.1.0, ...) is cut independently of
+# any competition submission, whenever the production system has a stable
+# state worth shipping.
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+jobs:
+  build-test-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Builds the single FastAPI+Streamlit image from Stage 19's Dockerfile.
+      # Cannot succeed until that Dockerfile exists (Task 19.3) -- expected
+      # to fail here until then; this is the known, by-design blocker, not
+      # a mistake in this workflow.
+      - name: Build Docker image
+        run: docker build -t climate-health:${{ github.ref_name }} .
+
+      # Tests the actual built artifact, not just the bare repo -- same
+      # "test the exact artifact" principle as Stage 17's champion gate and
+      # ci.yml. Assumes the Stage 19 image includes pytest/dev deps; the
+      # exact invocation gets finalized once that Dockerfile exists.
+      - name: Test built image
+        run: docker run --rm climate-health:${{ github.ref_name }} pytest tests/
+
+      # Deploy to the single Hugging Face Space (Task 19.4). Placeholder
+      # until that Space exists -- wiring this up is this task's one
+      # remaining step once Stage 19 is done, not a new task.
+      - name: Deploy to Hugging Face Space
+        run: |
+          echo "TODO (Stage 19.4): push ${{ github.ref_name }} image to the Hugging Face Space once it exists."
+          echo "Planned: git push to the HF Space's git remote with an HF_TOKEN repo secret, then curl the Space's /health endpoint to confirm the new build is live."
